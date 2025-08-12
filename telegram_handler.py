@@ -1,0 +1,166 @@
+import re, json, logging, pathlib, winsound
+import MetaTrader5 as mt5
+from telethon import TelegramClient, events
+from mt5_executor import send_order, close_pos, modify_position, resolve_symbol, load_broker_creds
+
+logging.getLogger("telethon").setLevel(logging.WARNING)
+# Load Telegram credentials
+creds = json.load(open("config/credentials.json"))
+client = TelegramClient('session', creds['api_id'], creds['api_hash'])
+
+# Play a beep on errors
+def alert_sound():
+    p = pathlib.Path(__file__).parent / "audio" / "error.wav"
+    winsound.PlaySound(str(p), winsound.SND_FILENAME | winsound.SND_ASYNC)
+
+# Regex for buy/sell opens: match "Ich kaufe|verkaufe" or "I Buy/Sell", symbol, optional CALL/PUT + strike
+trade_re = re.compile(
+    r"(?:Ich\s+(Kaufe|Verkaufe)|I\s+(Buy|Sell))\s+"
+    r"([A-Za-z0-9/._]+)"                # symbol
+    r"(?:\s+(Call|Put)\s*(\d+))?",   # optional CALL/PUT + strike
+    re.IGNORECASE
+)
+# Regex for closes
+close_re = re.compile(
+    r"(?:Ich\s+schließe|CLOSE)\s+"
+    r"([A-Za-z0-9/._]+)"                # symbol
+    r"(?:\s+(Call|Put)\s*(\d+))?",   # optional CALL/PUT + strike
+    re.IGNORECASE
+)
+# Regex for setting SL
+sl_symbol_re = re.compile(
+    r"Ich setze den SL bei\s+"
+    r"([A-Za-z0-9/._]+)"                # symbol
+    r"(?:\s+(Call|Put)\s*(\d+))?"    # optional CALL/PUT + strike
+    r"\s*auf\s*([\d.]+)",           # SL price
+    re.IGNORECASE
+)
+tp_symbol_re = re.compile(
+    r"(?:Ich setze den TP bei)\s+([A-Za-z0-9/._]+)"  # symbol
+    r"(?:\s*(Call|Put))?\s*"                         # optional Call/Put
+    r"(?:\s*(\d+))?\s*auf\s*([\d.]+)",               # optional strike + TP price
+    re.IGNORECASE
+)
+# Inline SL/TP
+sl_re = re.compile(r"SL[: ]+([\d.]+)", re.IGNORECASE)
+tp_re = re.compile(r"TP[: ]+([\d.]+)", re.IGNORECASE)
+# Multiplier flag
+mult_re = re.compile(r"maximalen Multiplikator", re.IGNORECASE)
+
+# Persistent SL/TP state
+state = {"sl": 0.0, "tp": 0.0}
+
+@client.on(events.NewMessage(chats=int(creds['group_id'])))
+async def handler(ev):
+    msg = ev.raw_text.strip()
+    logging.info(f"[TG] Msg: {msg}")
+
+    # Determine multiplier and active broker
+    use_max = bool(mult_re.search(msg))
+    active, _ = load_broker_creds()
+
+    # 1) OPEN trade
+    if m := trade_re.search(msg):
+        verb = (m.group(1) or m.group(2)).lower()
+        action = 'buy' if verb in ('kaufe','buy') else 'sell'
+        symbol_txt, opt, strike = m.group(3), m.group(4), m.group(5)
+        # Resolve symbol
+        try:
+            symbol = resolve_symbol(symbol_txt)
+        except ValueError as e:
+            logging.error(e)
+            alert_sound()
+            return
+        logging.info(f"[SIGNAL] OPEN {action.upper()} {symbol} {opt or ''} strike={strike or '—'} ×{'MAX' if use_max else 'std'}")
+        # Send the order at market price
+        res = send_order(
+            action=action,
+            symbol=symbol,
+            price=0,
+            sl=state['sl'],
+            tp=state['tp'],
+            multiplier=use_max,
+            opt=opt,
+            strike=float(strike) if strike else None
+        )
+        if res.retcode != mt5.TRADE_RETCODE_DONE:
+            logging.error(f"OPEN failed: {res.comment}")
+            alert_sound()
+        return
+
+    # 2) CLOSE trade
+    if m := close_re.search(msg):
+        symbol_txt, opt, strike = m.group(1), m.group(2), m.group(3)
+        try:
+            symbol = resolve_symbol(symbol_txt)
+        except ValueError as e:
+            logging.error(e)
+            alert_sound()
+            return
+        logging.info(f"[SIGNAL] CLOSE {symbol} {opt or ''} strike={strike or '—'}")
+        res = close_pos(symbol)
+        if res.retcode != mt5.TRADE_RETCODE_DONE:
+            logging.error(f"CLOSE failed: {res.comment}")
+            alert_sound()
+        return
+
+    # 3a) SET SL on symbol
+    if m := sl_symbol_re.search(msg):
+        symbol_txt, opt, strike, slv = m.group(1), m.group(2), m.group(3), float(m.group(4))
+        try:
+            symbol = resolve_symbol(symbol_txt)
+        except ValueError as e:
+            logging.error(e)
+            alert_sound()
+            return
+        logging.info(f"[SIGNAL] SET SL ALL {symbol} {opt or ''} strike={strike or '—'} → {slv}")
+        for p in mt5.positions_get(symbol=symbol) or []:
+            res = modify_position(p.ticket, sl=slv)
+            if not res or getattr(res, "retcode", None) != mt5.TRADE_RETCODE_DONE:
+                logging.error(f"[MT5] SL modify failed ticket={p.ticket}: {res.retcode} {res.comment}")
+                alert_sound()
+        return
+        # 3b) modify TP by symbol
+    if m := tp_symbol_re.search(msg):
+        sym_txt, opt, strike, tpv = m.group(1), m.group(2), m.group(3), float(m.group(4))
+        try:
+            symbol = resolve_symbol(sym_txt)
+        except ValueError as e:
+            logging.error(e); alert_sound(); return
+        logging.info(f"[SIGNAL] MOD TP ALL {symbol} {opt or ''} strike={strike or '—'} → {tpv}")
+        for p in mt5.positions_get(symbol=symbol) or []:
+            res = modify_position(p.ticket, tp=tpv)
+            if not res or getattr(res, "retcode", None) != mt5.TRADE_RETCODE_DONE:
+                logging.error(f"[MT5] TP modify failed ticket={p.ticket}: {res.retcode} {res.comment}")
+                alert_sound()
+        return
+    # 4) INLINE SL/TP
+    if m := sl_re.search(msg):
+        state['sl'] = float(m.group(1))
+        logging.info(f"[SIGNAL] STATE SL={state['sl']}")
+        return
+    if m := tp_re.search(msg):
+        state['tp'] = float(m.group(1))
+        logging.info(f"[SIGNAL] STATE TP={state['tp']}")
+        return
+
+    logging.debug("[TG] no match")
+
+async def run_listener():
+    try:
+        # Start and log who & where we're listening
+        await client.start()
+        me = await client.get_me()
+        logging.info(f"[TG] Logged in as {me.username} (id={me.id})")
+
+        try:
+            ch = await client.get_entity(int(creds["group_id"]))
+            title = getattr(ch, "title", None) or getattr(ch, "username", None)
+            logging.info(f"[TG] Listening to channel: {title or creds['group_id']}")
+        except ValueError:
+            logging.warning(f"[TG] Could not resolve channel id {creds['group_id']} (not in your dialogs)")
+
+        await client.run_until_disconnected()
+    except Exception as e:
+        logging.exception("[TG] Unexpected connection error")
+

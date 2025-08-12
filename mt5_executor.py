@@ -1,0 +1,351 @@
+import os
+import json
+import math
+import logging
+import pathlib
+import MetaTrader5 as mt5
+import winsound
+
+# — Global state —
+INITIAL_BALANCE: float = None
+_INITIALIZED: bool = False
+
+# — Paths —
+BASE_DIR      = pathlib.Path(__file__).parent
+LEV_PATH     = BASE_DIR / "config" / "lever_map.json"
+try:
+    LEVERAGE_MAP = json.loads(open(LEV_PATH, encoding="utf-8").read())
+except Exception:
+    LEVERAGE_MAP = {"DEFAULT": 10}
+
+CONFIG_PATH   = BASE_DIR / "config" / "mt5_credentials.json"
+SETTINGS_PATH = BASE_DIR / "config" / "settings.json"
+TERMINAL_PATH = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+
+# — Load bot settings —
+def load_settings() -> dict:
+    return json.load(open(SETTINGS_PATH, encoding="utf-8"))
+
+# — Beep on errors —
+def alert_sound():
+    p = BASE_DIR / "audio" / "error.wav"
+    winsound.PlaySound(str(p), winsound.SND_FILENAME | winsound.SND_ASYNC)
+
+# — Beep on success —
+def success_sound():
+    p = BASE_DIR / "audio" / "success.wav"
+    winsound.PlaySound(str(p), winsound.SND_FILENAME | winsound.SND_ASYNC)
+# — Pick up active broker creds —
+def load_broker_creds() -> tuple[str, dict]:
+    data = json.load(open(CONFIG_PATH, encoding="utf-8"))
+    active = data.get("active")
+    if not active or active not in data:
+        alert_sound()
+        raise KeyError("Active broker not set or not found in mt5_credentials.json")
+    return active, data[active]
+
+# — Initialize / login MT5 once per run —
+def connect() -> bool:
+    global INITIAL_BALANCE, _INITIALIZED
+    if _INITIALIZED:
+        return True
+
+    # 1) Load which broker is active
+    try:
+        active, creds = load_broker_creds()
+    except Exception as e:
+        logging.error(f"[MT5] {e}")
+        alert_sound()
+        return False
+
+    # 2) Verify terminal executable exists
+    if not os.path.exists(TERMINAL_PATH):
+        logging.error(f"[MT5] terminal not found: {TERMINAL_PATH}")
+        alert_sound()
+        return False
+
+    # 3) Kill any existing session
+    mt5.shutdown()
+
+    # 4) Initialize the MT5 terminal
+    if not mt5.initialize(path=TERMINAL_PATH):
+        code, msg = mt5.last_error()
+        logging.error(f"[MT5] initialize() failed ({code}): {msg}")
+        alert_sound()
+        return False
+
+    # 5) Perform login with the active broker’s credentials
+    if not mt5.login(
+        login=int(creds["account_id"]),
+        password=creds["password"],
+        server=creds["server"]
+    ):
+        code, msg = mt5.last_error()
+        logging.error(f"[MT5] login() failed ({code}): {msg}")
+        alert_sound()
+        return False
+
+    logging.info(f"[MT5] Connected to {active} ({creds['server']})")
+
+    # 6) Cache starting balance
+    INITIAL_BALANCE = mt5.account_info().balance
+    logging.info(f"[MT5] Base capital set to {INITIAL_BALANCE:.2f}")
+
+    _INITIALIZED = True
+    return True
+
+# — Symbol resolution helper —
+def resolve_symbol(sym: str) -> str:
+    raw = sym.strip().upper()
+    norm = raw.replace("/", "")
+    for cand in (norm, raw):
+        info = mt5.symbol_info(cand)
+        if info:
+            if not info.visible:
+                mt5.symbol_select(cand, True)
+            return cand
+    for s in mt5.symbols_get():
+        name, desc = s.name.upper(), getattr(s, "description", "").upper()
+        if raw in name or norm in name or raw in desc or norm in desc:
+            if not s.visible:
+                mt5.symbol_select(s.name, True)
+            return s.name
+    alert_sound()
+    raise ValueError(f"No symbol_info for '{sym}'")
+
+# — Build option ticker —
+def build_option_symbol(base: str, strike: float, opt: str) -> str:
+    side = "C" if opt.lower().startswith("c") else "P"
+    return f"{base.upper()}-{int(strike)}-{side}"
+
+import math
+import logging
+import MetaTrader5 as mt5
+from mt5_executor import alert_sound, INITIAL_BALANCE
+
+def get_leverage(symbol: str) -> float:
+    sym = symbol.upper()
+    # 1) MT5 margin_initial → true leverage
+    info = mt5.symbol_info(sym)
+    tick = mt5.symbol_info_tick(sym)
+    if info and tick:
+        mi    = getattr(info, "margin_initial", 0)
+        price = tick.ask or tick.bid or 0.0
+        csz   = info.trade_contract_size or 0.0
+        if mi > 0 and price > 0 and csz > 0:
+            return (csz * price) / mi
+
+    # 2) fallback to JSON map
+    return LEVERAGE_MAP.get(sym, LEVERAGE_MAP.get("DEFAULT", 10))
+
+def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
+             start_capital: float, free_margin: float) -> float:
+    """
+    LOT = (AvailableMoney * lot_percent * leverage) / (price * contract_size)
+    
+    AvailableMoney:
+      • if reinvest=False & lot_method=='percent_remaining': 
+            start_capital – sum(margin of all open positions)
+      • if reinvest=False & lot_method=='percent_start': 
+            start_capital
+      • if reinvest=True  & lot_method=='percent_remaining': 
+            free_margin
+      • if reinvest=True  & lot_method=='percent_start': 
+            current balance
+    """
+    info = mt5.symbol_info(symbol)
+    if not info or info.trade_contract_size<=0 or price<=0:
+        return settings.get("default_lot", 0.01)
+
+    # 1) Determine available money
+    reinvest = settings.get("reinvest", False)
+    method   = settings.get("lot_method", "percent_remaining")
+    if reinvest:
+        avail = free_margin if method=="percent_remaining" else balance
+    else:
+        avail = (start_capital - sum(
+                    getattr(p, "margin", p.volume * info.trade_contract_size * p.price_open)
+                 ) for p in mt5.positions_get() or []) \
+                if method=="percent_remaining" else start_capital
+
+    # 2) Risk amount
+    pct      = settings["lot_percent"] / 100.0
+    cap_pct  = settings.get("max_cap_percent", 20) / 100.0
+    risk_amt = min(avail * pct, start_capital * cap_pct)
+
+    # 3) Leverage & contract size
+    leverage      = get_leverage(symbol)
+    contract_size = info.trade_contract_size
+
+    # 4) Raw lot formula
+    raw_lot = (risk_amt * leverage) / (price * contract_size)
+
+    # 5) Snap to broker’s steps
+    step, vmin, vmax = info.volume_step, info.volume_min, info.volume_max
+    qty = max(vmin, min(math.floor(raw_lot/step)*step, vmax))
+    return round(qty, 8)
+
+# — Main trading function —
+def send_order(
+    action: str,
+    symbol: str,
+    price: float = 0,
+    tp: float   = 0,
+    sl: float   = 0,
+    comment_id: str = None,
+    multiplier: bool  = False,
+    opt: str         = None,
+    strike: float    = None
+) -> object:
+    if not connect():
+        alert_sound()
+        return fake(-9, "init failed")
+
+    # Option symbol handling
+    if opt and strike is not None:
+        symbol = build_option_symbol(symbol, strike, opt)
+
+    info = mt5.symbol_info(symbol)
+    if not info or info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
+        logging.error(f"[MT5] cannot trade {symbol}")
+        alert_sound()
+        return fake(-1, "disabled")
+
+    # Market price fallback
+    if price <= 0:
+        tick = mt5.symbol_info_tick(symbol)
+        if not tick:
+            logging.error(f"[MT5] no market tick for {symbol}")
+            alert_sound()
+            return fake(-3, "no price")
+        price = tick.ask if action.lower() == "buy" else tick.bid
+
+    # — Multiplier lot: use broker’s margin requirement —
+    settings = load_settings()
+    acct_info   = mt5.account_info()
+    balance     = acct_info.balance
+    free_margin = acct_info.margin_free
+    start_cap   = INITIAL_BALANCE
+    if multiplier:
+        # compute how much volume your risk % buys given initial margin requirement
+        pct        = settings["lot_percent"] / 100.0
+        base       = INITIAL_BALANCE if settings.get("lot_method") == "percent_start" else balance
+        risk_amt   = min(base * pct, base * (settings.get("max_cap_percent", 20)/100.0))
+        # margin_initial is the margin required per one contract; fallback to trade_contract_size*price
+        margin_req = getattr(info, "margin_initial", 0)
+        if not margin_req or margin_req <= 0:
+            margin_req = info.trade_contract_size * price
+        raw = risk_amt / margin_req
+        step, vmin, vmax = info.volume_step, info.volume_min, info.volume_max
+        lot        = max(vmin, min(math.floor(raw/step)*step, vmax))
+        logging.info(f"[MT5] MULT lot={lot:.4f} (risk={settings['lot_percent']}%, margin_req={margin_req:.4f}) for {symbol}@{price:.4f}")
+    else:
+        lot = calc_lot(symbol, settings, balance, price, start_cap, free_margin)
+        logging.info(f"[MT5] lot={lot:.4f} for {symbol}@{price:.4f}")
+
+    # Build & send
+    req = {
+        "action":     mt5.TRADE_ACTION_DEAL,
+        "symbol":     symbol,
+        "volume":     lot,
+        "type":       mt5.ORDER_TYPE_BUY if action.lower()=="buy" else mt5.ORDER_TYPE_SELL,
+        "price":      price,
+        "sl":         sl,
+        "tp":         tp,
+        "deviation":  20,
+        "magic":      234000,
+        "comment":    "TeleBot",
+        "type_time":  mt5.ORDER_TIME_GTC
+    }
+    if comment_id:
+        req["comment_id"] = comment_id
+
+    for fm in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
+        req["type_filling"] = fm
+        logging.info(f"[MT5] trying fill_mode={fm}")
+        res = mt5.order_send(req)
+        if not res:
+            logging.error("[MT5] send returned None")
+            alert_sound()
+            return fake(-2, "none")
+        if res.retcode != 10030:
+            logging.debug(f"[MT5] result {res.retcode} {res.comment}")
+            success_sound()
+            return res
+        logging.warning(f"[MT5] unsupported fill_mode={fm}")
+
+    return fake(10030, "unsupported")
+
+# — Close positions —
+def close_pos(symbol: str) -> object:
+    if not connect():
+        alert_sound()
+        return fake(-9, "init failed")
+    pos_list = mt5.positions_get(symbol=symbol) or []
+    if not pos_list:
+        logging.error(f"[MT5] no pos for {symbol}")
+        alert_sound()
+        return fake(-4, "none")
+    for p in pos_list:
+        opp   = mt5.ORDER_TYPE_SELL if p.type==mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+        price = (mt5.symbol_info_tick(p.symbol).bid if opp==mt5.ORDER_TYPE_SELL
+                 else mt5.symbol_info_tick(p.symbol).ask)
+        req = {
+            "action":    mt5.TRADE_ACTION_DEAL,
+            "position":  p.ticket,
+            "symbol":    p.symbol,
+            "volume":    p.volume,
+            "type":      opp,
+            "price":     price,
+            "deviation": 20,
+            "magic":     p.magic,
+            "comment":   "Close",
+            "type_time": mt5.ORDER_TIME_GTC
+        }
+        for fm in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
+            req["type_filling"] = fm
+            res = mt5.order_send(req)
+            if res and res.retcode != 10030:
+                success_sound()
+                return res
+    return fake(10030, "none")
+
+# — Modify existing position —
+def modify_position(ticket: int, sl: float = None, tp: float = None) -> object:
+    if not connect():
+        alert_sound()
+        return fake(-9, "init failed")
+    pl = mt5.positions_get(ticket=ticket) or []
+    if not pl:
+        logging.error(f"[MT5] no ticket {ticket}")
+        alert_sound()
+        return fake(-4, "none")
+    p = pl[0]
+    req = {
+        "action":    mt5.TRADE_ACTION_SLTP,
+        "position":  ticket,
+        "symbol":    p.symbol,
+        "type_time": mt5.ORDER_TIME_GTC
+    }
+    if sl is not None: req["sl"] = sl
+    if tp is not None: req["tp"] = tp
+    logging.info(f"[MT5] modify ticket={ticket} SL={sl} TP={tp}")
+    res = mt5.order_send(req)
+    if not res:
+        logging.error("[MT5] modify returned None")
+        alert_sound()
+        return fake(-5, "none")
+    success_sound()
+    return res
+
+# — Close by ticket ID —
+def close_pos_by_ticket(ticket: int) -> object:
+    return modify_position(ticket, sl=0, tp=0) or close_pos(str(ticket))
+
+# — Fake return type —
+def fake(code: int, comment: str) -> object:
+    class R: pass
+    r = R()
+    r.retcode = code
+    r.comment = comment
+    return r
