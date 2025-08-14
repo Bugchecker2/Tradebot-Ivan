@@ -226,16 +226,20 @@ elif tab == "Monitor":
             lots = p.volume
             units = lots * contract_size
             opened_dt = datetime.datetime.fromtimestamp(p.time, datetime.UTC)
-
             margin_req = getattr(sym_info, "margin_initial", 0)
-            if not margin_req or margin_req <= 0:
-                leverage   = get_leverage(p.symbol)
-                margin_req = (contract_size * p.price_open) / leverage
-            margin_used = margin_req * lots
+            if margin_req > 0:
+                margin_used = margin_req * lots
+            else:
+                leverage = get_leverage(p.symbol)
+                margin_used = (contract_size * p.price_open * lots) / leverage
 
             rows.append({
                 "Ticket":     p.ticket,
+                "Path": sym_info.path,
                 "Symbol":     p.symbol,
+                "Leverage":   f"{leverage:.1f}" or " - ",
+                "Volum" :     p.volume,
+                "Contract size": contract_size,
                 "Units":      units,
                 "Open Price": p.price_open,
                 "Market Value": units * p.price_open,
@@ -245,10 +249,13 @@ elif tab == "Monitor":
             })
         df = pd.DataFrame(rows)
 
-        df = df[
-            ["Ticket","Symbol","Units","Open Price","Market Value","Margin","Opened At","Profit"]
-        ]
-        st.table(df)
+        if df.empty:
+            st.write("No open positions.")
+        else:
+            df = df[
+                ["Ticket","Path","Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin","Opened At","Profit"]
+            ]
+            st.table(df)
 
 elif tab == "View Logs":
     st.header("📝 View Logs")

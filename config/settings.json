@@ -1,7 +1,7 @@
 {
   "lot_method": "percent_remaining",
-  "lot_percent": 5.0,
+  "lot_percent": 15.0,
   "max_cap_percent": 30,
-  "reinvest": true,
+  "reinvest": false,
   "default_lot": 0.01
 }

@@ -3,6 +3,7 @@ import json
 import math
 import logging
 import pathlib
+import re
 import MetaTrader5 as mt5
 import winsound
 
@@ -125,18 +126,37 @@ from mt5_executor import alert_sound, INITIAL_BALANCE
 
 def get_leverage(symbol: str) -> float:
     sym = symbol.upper()
-    # 1) MT5 margin_initial → true leverage
     info = mt5.symbol_info(sym)
-    tick = mt5.symbol_info_tick(sym)
-    if info and tick:
-        mi    = getattr(info, "margin_initial", 0)
-        price = tick.ask or tick.bid or 0.0
-        csz   = info.trade_contract_size or 0.0
-        if mi > 0 and price > 0 and csz > 0:
-            return (csz * price) / mi
+    if not info:
+        return 10.0
 
-    # 2) fallback to JSON map
-    return LEVERAGE_MAP.get(sym, LEVERAGE_MAP.get("DEFAULT", 10))
+    value = getattr(info, "path", "")  
+    path = str(value) if value is not None else ""  
+    path_norm = path.lower().strip()
+
+    if "stocks" in path_norm:
+        return 5.0
+
+    segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
+    rules = [
+        (["fx crosses", "fx exotics"], 20),
+        (["fx majors"], 30),
+        (["spot metals", "energy"], 10),
+        (["crypto"], 2),
+    ]
+    for seg in segments:
+        for keywords, lev in rules:
+            for kw in keywords:
+                if (
+                    seg == kw
+                    or seg.startswith(kw + " ")
+                    or seg.startswith(kw)
+                    or seg.endswith(" " + kw)
+                    or seg.endswith(kw)
+                ):
+                    return float(lev)
+    return 10.0
+
 
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
              start_capital: float, free_margin: float) -> float:
@@ -163,18 +183,28 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
     if reinvest:
         avail = free_margin if method=="percent_remaining" else balance
     else:
-        avail = (start_capital - sum(
-                    getattr(p, "margin", p.volume * info.trade_contract_size * p.price_open)
-                 ) for p in mt5.positions_get() or []) \
-                if method=="percent_remaining" else start_capital
+        sum_margin = 0.0
+        for p in mt5.positions_get() or []: #TODO: handle if 0 positions on account
+            p_info = mt5.symbol_info(p.symbol)
+            if p_info:
+                p_cs = p_info.trade_contract_size
+                p_lev = get_leverage(p.symbol)
+                margin = (p.volume * p_cs * p.price_open) / p_lev if p_lev > 0 else 0
+                sum_margin += margin
+            else:
+                logging.error("[Margin Calculation] no info for symbol adde defaul margine")
+                sum_margin += p.volume * 100000 * p.price_open / 30  # or default
+        avail = start_capital - sum_margin if method == "percent_remaining" else start_capital
+        avail = max(avail, 0.0)
+    logging.info(f"[Margin Calculation] avail. money = {avail}")
 
-    # 2) Risk amount
     pct      = settings["lot_percent"] / 100.0
     cap_pct  = settings.get("max_cap_percent", 20) / 100.0
     risk_amt = min(avail * pct, start_capital * cap_pct)
 
     # 3) Leverage & contract size
     leverage      = get_leverage(symbol)
+    logging.info(f"[LEVERAGE TEST] Calculated leverage = {leverage}")
     contract_size = info.trade_contract_size
 
     # 4) Raw lot formula
@@ -226,22 +256,22 @@ def send_order(
     balance     = acct_info.balance
     free_margin = acct_info.margin_free
     start_cap   = INITIAL_BALANCE
-    if multiplier:
-        # compute how much volume your risk % buys given initial margin requirement
-        pct        = settings["lot_percent"] / 100.0
-        base       = INITIAL_BALANCE if settings.get("lot_method") == "percent_start" else balance
-        risk_amt   = min(base * pct, base * (settings.get("max_cap_percent", 20)/100.0))
-        # margin_initial is the margin required per one contract; fallback to trade_contract_size*price
-        margin_req = getattr(info, "margin_initial", 0)
-        if not margin_req or margin_req <= 0:
-            margin_req = info.trade_contract_size * price
-        raw = risk_amt / margin_req
-        step, vmin, vmax = info.volume_step, info.volume_min, info.volume_max
-        lot        = max(vmin, min(math.floor(raw/step)*step, vmax))
-        logging.info(f"[MT5] MULT lot={lot:.4f} (risk={settings['lot_percent']}%, margin_req={margin_req:.4f}) for {symbol}@{price:.4f}")
-    else:
-        lot = calc_lot(symbol, settings, balance, price, start_cap, free_margin)
-        logging.info(f"[MT5] lot={lot:.4f} for {symbol}@{price:.4f}")
+    # if multiplier:
+    #     # compute how much volume your risk % buys given initial margin requirement
+    #     pct        = settings["lot_percent"] / 100.0
+    #     base       = INITIAL_BALANCE if settings.get("lot_method") == "percent_start" else balance
+    #     risk_amt   = min(base * pct, base * (settings.get("max_cap_percent", 20)/100.0))
+    #     # margin_initial is the margin required per one contract; fallback to trade_contract_size*price
+    #     margin_req = getattr(info, "margin_initial", 0)
+    #     if not margin_req or margin_req <= 0:
+    #         margin_req = info.trade_contract_size * price
+    #     raw = risk_amt / margin_req
+    #     step, vmin, vmax = info.volume_step, info.volume_min, info.volume_max
+    #     lot        = max(vmin, min(math.floor(raw/step)*step, vmax))
+    #     logging.info(f"[MT5] MULT lot={lot:.4f} (risk={settings['lot_percent']}%, margin_req={margin_req:.4f}) for {symbol}@{price:.4f}")
+    # else:
+    lot = calc_lot(symbol, settings, balance, price, start_cap, free_margin)
+    logging.info(f"[MT5] lot={lot:.4f} for {symbol}@{price:.4f}")
 
     # Build & send
     req = {
