@@ -120,21 +120,22 @@ def build_option_symbol(base: str, strike: float, opt: str) -> str:
     return f"{base.upper()}-{int(strike)}-{side}"
 
 import math
-import logging
 import MetaTrader5 as mt5
 from mt5_executor import alert_sound, INITIAL_BALANCE
 
 def get_leverage(symbol: str) -> float:
-    sym = symbol.upper()
+    sym = symbol
     info = mt5.symbol_info(sym)
     if not info:
         return 10.0
 
-    value = getattr(info, "path", "")  
-    path = str(value) if value is not None else ""  
+    value = getattr(info, "path", "")
+    if isinstance(value, bytes):
+        path = value.decode(errors="ignore")
+    else:
+        path = str(value) if value is not None else ""
     path_norm = path.lower().strip()
-
-    if "stocks" in path_norm:
+    if "stock" in path_norm:  
         return 5.0
 
     segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
@@ -156,7 +157,6 @@ def get_leverage(symbol: str) -> float:
                 ):
                     return float(lev)
     return 10.0
-
 
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
              start_capital: float, free_margin: float) -> float:
@@ -311,6 +311,15 @@ def close_pos(symbol: str) -> object:
     if not connect():
         alert_sound()
         return fake(-9, "init failed")
+    
+    # Check if symbol exists
+    try:
+        symbol = resolve_symbol(symbol)
+    except ValueError as e:
+        logging.error(f"[MT5] {e}")
+        alert_sound()
+        return fake(-1, "no symbol")
+    
     pos_list = mt5.positions_get(symbol=symbol) or []
     if not pos_list:
         logging.error(f"[MT5] no pos for {symbol}")
@@ -318,8 +327,12 @@ def close_pos(symbol: str) -> object:
         return fake(-4, "none")
     for p in pos_list:
         opp   = mt5.ORDER_TYPE_SELL if p.type==mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-        price = (mt5.symbol_info_tick(p.symbol).bid if opp==mt5.ORDER_TYPE_SELL
-                 else mt5.symbol_info_tick(p.symbol).ask)
+        tick = mt5.symbol_info_tick(p.symbol)
+        if not tick:
+            logging.error(f"[MT5] no tick for {p.symbol}")
+            alert_sound()
+            continue
+        price = tick.bid if opp==mt5.ORDER_TYPE_SELL else tick.ask
         req = {
             "action":    mt5.TRADE_ACTION_DEAL,
             "position":  p.ticket,
@@ -367,15 +380,102 @@ def modify_position(ticket: int, sl: float = None, tp: float = None) -> object:
         return fake(-5, "none")
     success_sound()
     return res
+# — Modify existing position by symbol (new function for setting SL/TP on trades by symbol) —
+def modify_by_symbol(symbol: str, sl: float = 0.0, tp: float = 0.0) -> object:
+    if not connect():
+        alert_sound()
+        return fake(-9, "init failed")
+    try:
+        symbol = resolve_symbol(symbol)
+    except ValueError as e:
+        logging.error(f"[MT5] {e}")
+        alert_sound()
+        return fake(-1, "no symbol")
+    
+    pl = mt5.positions_get(symbol=symbol) or []
+    if not pl:
+        logging.error(f"[MT5] no pos for {symbol}")
+        alert_sound()
+        return fake(-4, "none")
+    
+    # Assuming multiple positions possible, modify all
+    for p in pl:
+        req = {
+            "action":    mt5.TRADE_ACTION_SLTP,
+            "position":  p.ticket,
+            "symbol":    p.symbol,
+            "type_time": mt5.ORDER_TIME_GTC
+        }
+        if sl is not None: req["sl"] = sl
+        if tp is not None: req["tp"] = tp
+        logging.info(f"[MT5] modify ticket={p.ticket} SL={sl} TP={tp}")
+        res = mt5.order_send(req)
+        if not res:
+            logging.error("[MT5] modify returned None")
+            alert_sound()
+            return fake(-5, "none")
+        success_sound()
+        # If multiple, could collect results, but for simplicity return last
+    return res
 
 # — Close by ticket ID —
 def close_pos_by_ticket(ticket: int) -> object:
-    return modify_position(ticket, sl=0, tp=0) or close_pos(str(ticket))
+    if not connect():
+        alert_sound()
+        return fake(-9, "init failed")
+    pl = mt5.positions_get(ticket=ticket) or []
+    if not pl:
+        logging.error(f"[MT5] no ticket {ticket}")
+        alert_sound()
+        return fake(-4, "none")
+    p = pl[0]
+    opp   = mt5.ORDER_TYPE_SELL if p.type==mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+    tick = mt5.symbol_info_tick(p.symbol)
+    if not tick:
+        logging.error(f"[MT5] no tick for {p.symbol}")
+        alert_sound()
+        return fake(-3, "no price")
+    price = tick.bid if opp==mt5.ORDER_TYPE_SELL else tick.ask
+    req = {
+        "action":    mt5.TRADE_ACTION_DEAL,
+        "position":  p.ticket,
+        "symbol":    p.symbol,
+        "volume":    p.volume,
+        "type":      opp,
+        "price":     price,
+        "deviation": 20,
+        "magic":     p.magic,
+        "comment":   "Close",
+        "type_time": mt5.ORDER_TIME_GTC
+    }
+    for fm in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
+        req["type_filling"] = fm
+        logging.info(f"[MT5] trying fill_mode={fm}")
+        res = mt5.order_send(req)
+        if not res:
+            logging.error("[MT5] send returned None")
+            alert_sound()
+            return fake(-2, "none")
+        if res.retcode != 10030:
+            logging.debug(f"[MT5] result {res.retcode} {res.comment}")
+            success_sound()
+            return res
+        logging.warning(f"[MT5] unsupported fill_mode={fm}")
+    return fake(10030, "unsupported")
 
 # — Fake return type —
 def fake(code: int, comment: str) -> object:
-    class R: pass
+    class R:
+        pass
     r = R()
     r.retcode = code
+    r.deal = 0
+    r.order = 0
+    r.volume = 0.0
+    r.price = 0.0
+    r.bid = 0.0
+    r.ask = 0.0
     r.comment = comment
+    r.request_id = 0
+    r.retcode_external = 0
     return r

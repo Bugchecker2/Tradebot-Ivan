@@ -1,7 +1,7 @@
 import re, json, logging, pathlib, winsound
 import MetaTrader5 as mt5
 from telethon import TelegramClient, events
-from mt5_executor import send_order, close_pos, modify_position, resolve_symbol, load_broker_creds
+from mt5_executor import modify_by_symbol, send_order, close_pos, modify_position, resolve_symbol, load_broker_creds
 
 logging.getLogger("telethon").setLevel(logging.WARNING)
 # Load Telegram credentials
@@ -53,8 +53,10 @@ state = {"sl": 0.0, "tp": 0.0}
 @client.on(events.NewMessage(chats=int(creds['group_id'])))
 async def handler(ev):
     msg = ev.raw_text.strip()
-    logging.info(f"[TG] Msg: {msg}")
-
+    try:
+        logging.info(f"[TG] Msg: {msg}")
+    except Exception as e:
+        logging.error(f"Logging failed: {e}")
     # Determine multiplier and active broker
     use_max = bool(mult_re.search(msg))
     active, _ = load_broker_creds()
@@ -104,7 +106,6 @@ async def handler(ev):
             alert_sound()
         return
 
-    # 3a) SET SL on symbol
     if m := sl_symbol_re.search(msg):
         symbol_txt, opt, strike, slv = m.group(1), m.group(2), m.group(3), float(m.group(4))
         try:
@@ -114,31 +115,32 @@ async def handler(ev):
             alert_sound()
             return
         logging.info(f"[SIGNAL] SET SL ALL {symbol} {opt or ''} strike={strike or '—'} → {slv}")
-        for p in mt5.positions_get(symbol=symbol) or []:
-            res = modify_position(p.ticket, sl=slv)
-            if not res or getattr(res, "retcode", None) != mt5.TRADE_RETCODE_DONE:
-                logging.error(f"[MT5] SL modify failed ticket={p.ticket}: {res.retcode} {res.comment}")
-                alert_sound()
-        return
-        # 3b) modify TP by symbol
+        res = modify_by_symbol(symbol, sl=slv)
+        if not res or getattr(res, "retcode", None) != mt5.TRADE_RETCODE_DONE:
+            logging.error(f"[MT5] SL modify failed for {symbol}: {getattr(res, 'retcode', 'unknown')} {getattr(res, 'comment', '')}")
+            alert_sound()
+            return
+
     if m := tp_symbol_re.search(msg):
         sym_txt, opt, strike, tpv = m.group(1), m.group(2), m.group(3), float(m.group(4))
         try:
             symbol = resolve_symbol(sym_txt)
         except ValueError as e:
-            logging.error(e); alert_sound(); return
+            logging.error(e)
+            alert_sound()
+            return
         logging.info(f"[SIGNAL] MOD TP ALL {symbol} {opt or ''} strike={strike or '—'} → {tpv}")
-        for p in mt5.positions_get(symbol=symbol) or []:
-            res = modify_position(p.ticket, tp=tpv)
-            if not res or getattr(res, "retcode", None) != mt5.TRADE_RETCODE_DONE:
-                logging.error(f"[MT5] TP modify failed ticket={p.ticket}: {res.retcode} {res.comment}")
-                alert_sound()
-        return
-    # 4) INLINE SL/TP
+        res = modify_by_symbol(symbol, tp=tpv)
+        if not res or getattr(res, "retcode", None) != mt5.TRADE_RETCODE_DONE:
+            logging.error(f"[MT5] TP modify failed for {symbol}: {getattr(res, 'retcode', 'unknown')} {getattr(res, 'comment', '')}")
+            alert_sound()
+            return
+
     if m := sl_re.search(msg):
         state['sl'] = float(m.group(1))
         logging.info(f"[SIGNAL] STATE SL={state['sl']}")
         return
+
     if m := tp_re.search(msg):
         state['tp'] = float(m.group(1))
         logging.info(f"[SIGNAL] STATE TP={state['tp']}")

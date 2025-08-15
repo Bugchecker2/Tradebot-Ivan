@@ -1,5 +1,6 @@
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
+import streamlit.components.v1 as components
 from mt5_executor import get_leverage
 import streamlit as st
 import pathlib
@@ -93,11 +94,44 @@ def render_colored_log(log_path: pathlib.Path, show_debug: bool):
     lines = log_path.read_text().splitlines()
     if not show_debug:
         lines = [l for l in lines if "DEBUG" not in l]
-    # Show only first 50 lines
-    displayed = lines
+    
+    displayed = lines[-200:]
     colored = [colorize_log_line(l) for l in displayed if colorize_log_line(l) is not None]
-    st.markdown("<br>".join(colored), unsafe_allow_html=True)
+    
+    # Render in a scrollable div and auto-scroll to bottom
+    log_html = "<br>".join(colored)
+    html = f"""
+    <div id="log-container" style="height: 500px; width: 700px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background-color: #f8f9fa;">
+        {log_html}
+    </div>
 
+    <script>
+    (function() {{
+        const container = document.getElementById('log-container');
+        const threshold = 20;  // pixels tolerance for "at bottom"
+
+        // Restore saved scroll position
+        let savedScrollTop = parseFloat(localStorage.getItem('logScrollTop')) || 0;
+        let savedScrollHeight = parseFloat(localStorage.getItem('logScrollHeight')) || 0;
+        let isFirstLoad = localStorage.getItem('logScrollTop') === null;
+
+        container.scrollTop = savedScrollTop;
+
+        if (isFirstLoad) {{
+            container.scrollTop = container.scrollHeight;
+        }} else if (savedScrollHeight > 0 && savedScrollTop + container.clientHeight >= savedScrollHeight - threshold) {{
+            container.scrollTop = container.scrollHeight;
+        }}
+
+        // Save scroll position on scroll events
+        container.addEventListener('scroll', () => {{
+            localStorage.setItem('logScrollTop', container.scrollTop);
+            localStorage.setItem('logScrollHeight', container.scrollHeight);
+        }});
+    }})();
+    </script>
+    """
+    components.html(html, height=550,width=750, scrolling=False)
 # --- Paths ---
 BASE_DIR      = pathlib.Path(__file__).parent.resolve()
 CRED_PATH     = BASE_DIR.parent / "config" / "credentials.json"
@@ -263,6 +297,8 @@ elif tab == "View Logs":
     # ─── Auto‑refresh on new log lines ───
     # rerun the script every 1 s so we pick up any appended lines immediately
     st_autorefresh(interval=1_000, key="logs_autorefresh")
+
+    last_lof_message = None
 
     # ─── Controls ───
     col1, col2 = st.columns([1,3])
