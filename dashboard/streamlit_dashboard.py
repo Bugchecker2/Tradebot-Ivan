@@ -279,7 +279,7 @@ elif tab == "Monitor":
                 "Market Value": units * p.price_open,
                 "Margin":       f"{margin_used:.2f}",
                 "Opened At":    opened_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                "Profit":     p.profit
+                "Profit":     p.profit*p.volume*leverage
             })
         df = pd.DataFrame(rows)
 
