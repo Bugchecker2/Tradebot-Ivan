@@ -91,7 +91,7 @@ def render_colored_log(log_path: pathlib.Path, show_debug: bool):
     if not log_path.exists():
         st.write(f"(No log at {log_path})")
         return
-    lines = log_path.read_text().splitlines()
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
     if not show_debug:
         lines = [l for l in lines if "DEBUG" not in l]
     

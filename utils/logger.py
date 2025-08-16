@@ -1,6 +1,7 @@
 import logging
 import colorlog
 import MetaTrader5 as mt5
+import sys  
 
 _logging_enabled = False  # start “detailed” off
 
@@ -22,6 +23,10 @@ class ToggleFilter(logging.Filter):
         return _logging_enabled
 
 def setup_logger():
+    if sys.platform.startswith('win'):
+        sys.stderr = open(sys.stderr.fileno(), mode='w', encoding='utf-8', errors='replace', buffering=1)
+        sys.stdout = open(sys.stdout.fileno(), mode='w', encoding='utf-8', errors='replace', buffering=1) 
+
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
 
@@ -30,7 +35,7 @@ def setup_logger():
         root.handlers.clear()
 
     # 1) Main info log: always INFO+
-    fh_info = logging.FileHandler("trading_bot.log")
+    fh_info = logging.FileHandler("trading_bot.log", encoding='utf-8')  
     fh_info.setLevel(logging.INFO)
     fh_info.setFormatter(
         logging.Formatter("%(asctime)s – %(levelname)s – %(message)s")
@@ -38,7 +43,7 @@ def setup_logger():
     root.addHandler(fh_info)
 
     # 2) Detailed debug log: DEBUG+, but filter by toggle
-    fh_dbg = logging.FileHandler("mt5_detailed.log")
+    fh_dbg = logging.FileHandler("mt5_detailed.log", encoding='utf-8') 
     fh_dbg.setLevel(logging.DEBUG)
     fh_dbg.setFormatter(
         logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
