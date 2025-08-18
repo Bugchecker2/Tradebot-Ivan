@@ -256,53 +256,47 @@ elif tab == "Monitor":
 
         positions = mt5.positions_get() or []
         rows = []
-        libertex_rows = []
-        total_notional = 0.0  # New: Track total notional for proportional allocation
+        libertex_rows = []  # New: For Libertex-style table
         for p in positions:
             sym_info = mt5.symbol_info(p.symbol)
             contract_size = sym_info.trade_contract_size if sym_info else 1
             lots = p.volume
             units = lots * contract_size
             opened_dt = datetime.datetime.fromtimestamp(p.time, datetime.UTC)
-            notional = units * p.price_open  # Market Value / Notional
-            total_notional += notional  # New: Accumulate total
+            m_libertex = units * p.price_open  # Notional (market value)
+            margin_req = getattr(sym_info, "margin_initial", 0)
+            if margin_req > 0:
+                margin_used = margin_req * lots
+            else:
+                leverage = get_leverage(p.symbol)
+                margin_used = (contract_size * p.price_open * lots) / leverage
 
-            # Fallback margin calc (optional, but we'll override later with proportional)
-            margin_used = mt5.order_calc_margin(p.type, p.symbol, p.volume, p.price_open)
-            if margin_used is None:
-                st.warning(f"Failed to calculate margin for position {p.ticket} ({p.symbol}). Using fallback.")
-                margin_req = getattr(sym_info, "margin_initial", 0)
-                if margin_req > 0:
-                    margin_used = margin_req * lots
-                else:
-                    leverage_fallback = get_leverage(p.symbol)
-                    margin_used = (contract_size * p.price_open * lots) / leverage_fallback
+            # New: Calculate profit % based on margin (matches Libertex)
+            profit_pct = (p.profit / margin_used * 100) if margin_used else 0
+            margin_mt5 = mt5.order_calc_margin(p.type, p.symbol, p.volume, p.price_open)
 
-            # Temp leverage (will override)
-            leverage = notional / margin_used if margin_used > 0 else 0
-
-            rows.append({  # Store notional for now; we'll update margin/leverage after loop
+            rows.append({
                 "Ticket":     p.ticket,
                 "Path": sym_info.path,
                 "Symbol":     p.symbol,
-                "Leverage":   leverage,  # Placeholder
+                "Leverage":   f"{leverage:.1f}" or " - ",
                 "Volum" :     p.volume,
                 "Contract size": contract_size,
                 "Units":      units,
                 "Open Price": p.price_open,
-                "Market Value": notional,
-                "Margin":     margin_used,  # Placeholder
+                "Market Value": units * p.price_open,
+                "Margin":       f"{margin_used:.2f}",
+                "Margin by mt5": f"{margin_mt5:.2f}",
                 "Opened At":    opened_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                "Profit":     p.profit,
-                "Notional":   notional  # Temp field for allocation
+                "Profit":     p.profit  
             })
 
-            # Libertex-style row (update as needed; using placeholder margin/leverage for now)
-            operation = "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL"
+            # New: Build Libertex-style row
+            operation = "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL"  # 0=buy, 1=sell
             actual_margin = info.margin
-            commission_est = - (0.001 * notional)
-            if p.type == mt5.POSITION_TYPE_BUY:
-                commission_est -= (0.0001 * notional)
+            commission_est = - (0.001 * (units * p.price_open))
+            if p.type == mt5.POSITION_TYPE_BUY:  # Rollover for longs 
+                commission_est -= (0.0001 * (units * p.price_open))  # Tune based on time open
             adjusted_profit = p.profit + commission_est
             profit_pct = (adjusted_profit / actual_margin * 100) if actual_margin else 0
             
@@ -311,29 +305,17 @@ elif tab == "Monitor":
                 "Price": f"{p.price_open:.2f}",
                 "Operation": f"{operation} ↑" if operation == "BUY" else f"{operation} ↓",
                 "Multiplier": f"x {leverage:.0f}",
-                "Volume": f"€{margin_used:.2f} (x {leverage:.0f}) = €{notional:.0f}",
+                "Volume": f"€{margin_used:.2f} (x {leverage:.0f}) = €{m_libertex:.0f}",
                 "Profit": f"€{adjusted_profit:.2f}"
             })
-
-        # New: If positions exist and total_notional > 0, allocate proportional margin
-        if positions and total_notional > 0:
-            total_margin = info.margin
-            effective_leverage = total_notional / total_margin if total_margin > 0 else 0
-            for row in rows:
-                prop_factor = row["Notional"] / total_notional
-                allocated_margin = prop_factor * total_margin
-                row["Margin"] = f"{allocated_margin:.2f}"
-                row["Leverage"] = f"{effective_leverage:.1f}" if effective_leverage > 0 else "-"
-            # Also update Libertex rows if needed (e.g., use effective_leverage and allocated_margin)
 
         df = pd.DataFrame(rows)
 
         if df.empty:
             st.write("No open positions.")
         else:
-            # Remove temp 'Notional' field
             df = df[
-                ["Ticket","Path","Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin","Opened At","Profit"]
+                ["Ticket","Path","Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin","Margin by mt5","Opened At","Profit"]
             ]
             st.table(df)
 

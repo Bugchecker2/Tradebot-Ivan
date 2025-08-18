@@ -33,6 +33,7 @@ def alert_sound():
     p = BASE_DIR / "audio" / "error.wav"
     winsound.PlaySound(str(p), winsound.SND_FILENAME | winsound.SND_ASYNC)
 
+
 # — Beep on success —
 def success_sound():
     p = BASE_DIR / "audio" / "success.wav"
@@ -176,7 +177,9 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
              start_capital: float, free_margin: float) -> float:
     """
     LOT = (AvailableMoney * lot_percent * leverage) / (price * contract_size)
-    
+    Margin
+    Margin provided function order_calc_margin
+
     AvailableMoney:
       • if reinvest=False & lot_method=='percent_remaining': 
             start_capital – sum(margin of all open positions)
@@ -204,6 +207,7 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
                 p_cs = p_info.trade_contract_size
                 p_lev = get_leverage(p.symbol)
                 margin = (p.volume * p_cs * p.price_open) / p_lev if p_lev > 0 else 0
+                margin_mt5 = mt5.order_calc_margin(p.type, p.symbol, p.volume, p.price_open)
                 sum_margin += margin
             else:
                 logging.error("[Margin Calculation] no info for symbol adde defaul margine")
@@ -237,7 +241,7 @@ def send_order(
     tp: float   = 0,
     sl: float   = 0,
     comment_id: str = None,
-    multiplier: bool  = False,
+    multiplier: bool  = False, #no need
     opt: str         = None,
     strike: float    = None
 ) -> object:
