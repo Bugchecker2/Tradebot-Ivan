@@ -284,7 +284,7 @@ elif tab == "Monitor":
                 "Contract size": contract_size,
                 "Units":      units,
                 "Open Price": p.price_open,
-                "Market Value": units * p.price_open,
+                "Market Value": f"{units * p.price_open:.2f}",
                 "Margin":       f"{margin_used:.2f}",
                 "Margin by mt5": f"{margin_mt5:.2f}",
                 "Opened At":    opened_dt.strftime("%Y-%m-%d %H:%M:%S"),
@@ -317,13 +317,40 @@ elif tab == "Monitor":
             df = df[
                 ["Ticket","Path","Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin","Margin by mt5","Opened At","Profit"]
             ]
-            st.table(df)
+            
+            # Add column selection for main table
+            st.subheader("Main Positions Table")
+            default_columns = df.columns.tolist()
+            selected_columns = st.multiselect(
+                "Select columns to display",
+                options=default_columns,
+                default=default_columns
+            )
+            st.dataframe(
+                df[selected_columns],
+                use_container_width=True,
+                height=300  
+            )
 
-            # New: Separate Libertex-style table
             if libertex_rows:
                 st.subheader("Libertex-Style Position Details")
                 df_libertex = pd.DataFrame(libertex_rows)
-                st.table(df_libertex)
+                libertex_columns = df_libertex.columns.tolist()
+                selected_libertex_columns = st.multiselect(
+                    "Select columns to display (Libertex)",
+                    options=libertex_columns,
+                    default=libertex_columns,
+                    key="libertex_columns"
+                )
+                st.dataframe(
+                    df_libertex[selected_libertex_columns],
+                    use_container_width=True,
+                    height=300  # Slightly taller for 4:5 feel; assuming width ~625 for 4:5 ratio (height:width=4:5 -> height=0.8*width, but dynamic)
+                )
+
+            use_45_ratio = st.checkbox("Use +-approximate 4:5 aspect ratio for tables (sets fixed heights)")
+            if use_45_ratio:
+                st.markdown("<style>.stDataFrame { height: 320px !important; }</style>", unsafe_allow_html=True)  # 4:5 
 
 elif tab == "View Logs":
     st.header("📝 View Logs")
