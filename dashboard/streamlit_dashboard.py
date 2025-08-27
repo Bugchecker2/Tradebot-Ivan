@@ -146,13 +146,36 @@ st.set_page_config(page_title="📊 Telegram-MT5 Dashboard", layout="wide")
 st.title("📊 Telegram-MT5 Bot Dashboard")
 
 # Sidebar navigation
-tab = st.sidebar.radio("Select View:", [
-    "Manage Credentials",
-    "Manage Settings",
-    "Monitor",
-    "View Logs",
-    "Manage Bot"
-])
+tab = st.radio("Select View:", [
+    "Manage Credentials", 
+    "Manage Settings", 
+    "Monitor", 
+    "View Logs", 
+    "Manage Bot"], horizontal=True)
+st.markdown("""
+    <style>
+    #telegram-mt-5-bot-dashboard {
+        position: fixed; 
+        top: 0%;  
+        left: 0;
+        width: 100%; 
+        z-index: 9999999;  
+        background-color: white;
+        padding: 10px 0;  
+        margin: 0; 
+        border-bottom: 1px solid #ddd;
+    }
+    div.element-container:has([role="radiogroup"]) {
+        position: sticky;
+        top: 5%;
+        right: 50%;  
+        z-index: 1000000; 
+        background-color: white;  
+        padding: 10px 0; 
+        border-bottom: 1px solid #ddd; 
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 if tab == "Manage Credentials":
     st.header("🔑 Credentials")
@@ -237,7 +260,7 @@ elif tab == "Manage Settings":
 elif tab == "Monitor":
     st.header("📈 Monitor Trades")
     st_autorefresh(interval=1_000, key="monitor_autorefresh")
-    if st.button("🔄 Refresh Monitor"): pass
+#    if st.button("🔄 Refresh Monitor"): pass
 
     if not mt5.initialize():
         st.error("Failed to initialize MT5. Check credentials and terminal path.")
@@ -279,16 +302,17 @@ elif tab == "Monitor":
                 "Ticket":     p.ticket,
                 "Path": sym_info.path,
                 "Symbol":     p.symbol,
-                "Leverage":   f"{leverage:.1f}" or " - ",
-                "Volum" :     p.volume,
-                "Contract size": contract_size,
-                "Units":      units,
-                "Open Price": p.price_open,
+                "Leverage":   f"{leverage:.0f}" or " - ",
+                "Volum" :     f"{p.volume:.2f}",
+                "Contract size": f"{contract_size:.0f}",
+#                "Units":      f"{units:.2f}",
+                "Units":       f"{units:.2f}" if units < 10 else f"{units:.0f}",
+                "Open Price": f"{p.price_open:.2f}",
                 "Market Value": f"{units * p.price_open:.2f}",
                 "Margin":       f"{margin_used:.2f}",
                 "Margin by mt5": f"{margin_mt5:.2f}",
-                "Opened At":    opened_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                "Profit":     p.profit  
+#                "Opened At":    opened_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "Profit":     f"{p.profit:.2f}"  
             })
 
             # New: Build Libertex-style row
@@ -299,14 +323,18 @@ elif tab == "Monitor":
                 commission_est -= (0.0001 * (units * p.price_open))  # Tune based on time open
             adjusted_profit = p.profit + commission_est
             profit_pct = (adjusted_profit / actual_margin * 100) if actual_margin else 0
-            
+            tick = mt5.symbol_info_tick(p.symbol)
+            price_close = tick.ask if operation == "BUY" else tick.bid
+            profit_close = (price_close - p.price_open) * units + commission_est
+
             libertex_rows.append({
+                "Symbol":     p.symbol,
                 "Date ": opened_dt.strftime("%d %B %Y, %H:%M:%S"), 
                 "Price": f"{p.price_open:.2f}",
                 "Operation": f"{operation} ↑" if operation == "BUY" else f"{operation} ↓",
                 "Multiplier": f"x {leverage:.0f}",
                 "Volume": f"€{margin_used:.2f} (x {leverage:.0f}) = €{m_libertex:.0f}",
-                "Profit": f"€{adjusted_profit:.2f}"
+                "Profit": f"€{profit_close:.2f}"
             })
 
         df = pd.DataFrame(rows)
@@ -315,42 +343,17 @@ elif tab == "Monitor":
             st.write("No open positions.")
         else:
             df = df[
-                ["Ticket","Path","Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin","Margin by mt5","Opened At","Profit"]
+#                ["Ticket","Path","Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin","Margin by mt5","Opened At","Profit"]
+                ["Ticket","Path", "Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin","Margin by mt5","Profit"]
             ]
-            
-            # Add column selection for main table
-            st.subheader("Main Positions Table")
-            default_columns = df.columns.tolist()
-            selected_columns = st.multiselect(
-                "Select columns to display",
-                options=default_columns,
-                default=default_columns
-            )
-            st.dataframe(
-                df[selected_columns],
-                use_container_width=True,
-                height=300  
-            )
+            st.table(df)
+#            pd.set_option('display.max_colwidth', 10)
 
+            # New: Separate Libertex-style table
             if libertex_rows:
                 st.subheader("Libertex-Style Position Details")
                 df_libertex = pd.DataFrame(libertex_rows)
-                libertex_columns = df_libertex.columns.tolist()
-                selected_libertex_columns = st.multiselect(
-                    "Select columns to display (Libertex)",
-                    options=libertex_columns,
-                    default=libertex_columns,
-                    key="libertex_columns"
-                )
-                st.dataframe(
-                    df_libertex[selected_libertex_columns],
-                    use_container_width=True,
-                    height=300  # Slightly taller for 4:5 feel; assuming width ~625 for 4:5 ratio (height:width=4:5 -> height=0.8*width, but dynamic)
-                )
-
-            use_45_ratio = st.checkbox("Use +-approximate 4:5 aspect ratio for tables (sets fixed heights)")
-            if use_45_ratio:
-                st.markdown("<style>.stDataFrame { height: 320px !important; }</style>", unsafe_allow_html=True)  # 4:5 
+                st.table(df_libertex)
 
 elif tab == "View Logs":
     st.header("📝 View Logs")
