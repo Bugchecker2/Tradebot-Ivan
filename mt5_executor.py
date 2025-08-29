@@ -46,7 +46,6 @@ def load_broker_creds() -> tuple[str, dict]:
         alert_sound()
         raise KeyError("Active broker not set or not found in mt5_credentials.json")
     return active, data[active]
-
 # — Initialize / login MT5 once per run —
 def connect() -> bool:
     global INITIAL_BALANCE, _INITIALIZED
@@ -138,11 +137,74 @@ import math
 import MetaTrader5 as mt5
 from mt5_executor import alert_sound, INITIAL_BALANCE
 
+
+def switch_broker(new_broker:str):
+    try:
+        data = json.load(open(CONFIG_PATH, encoding="utf-8"))
+    except Exception as e:
+        logging.error()
+        alert_sound()
+        return False
+    if new_broker not in data:
+        logging.error(f"[MT5] Broker '{new_broker}' not found in config")
+        alert_sound()
+        return False
+    data["active"]=new_broker
+    try:
+        with open(CONFIG_PATH, 'w', encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logging.error(f"[MT5] Failed to save config: {e}")
+        alert_sound()
+        return False
+    logging.info(f"[MT5] Switched active broker to {new_broker}")
+    global _INITIALIZED
+    _INITIALIZED = False
+    return connect()
+
+def search_leverage_in_map(name: str) -> float:
+    with open(CONFIG_PATH, 'r', encoding="utf-8") as f:
+        data = json.load(f)
+    active = data.get("active")
+    if not active:
+        return 10.0
+    if active == "MetaQuotes":
+        LEVERAGE_MAP_PATH = BASE_DIR / "leverage_maps" / "metaquotes.json"
+        return 1
+    elif active == "Libertex-PRO":
+        LEVERAGE_MAP_PATH = BASE_DIR / "leverage_maps" / "libertex-pro.json"
+    elif active == "Libertex-PRO":
+        LEVERAGE_MAP_PATH = BASE_DIR / "leverage_maps" / "libertex-pro.json"    
+    else:
+        return 10.0  
+    if not LEVERAGE_MAP_PATH.exists():
+        return 10.0
+    
+    with open(LEVERAGE_MAP_PATH, 'r', encoding="utf-8") as f:
+        leverage_data = json.load(f)
+    sym = name.upper()
+    for category in leverage_data:
+        if category == "platform" or category == "Stocks":  #SKIP
+            continue
+        items = leverage_data[category]
+        if isinstance(items, list):
+            for item in items:
+                instr = item.get("Instrument", "").upper()
+                if instr == sym:
+                    return float(item["Leverage"])
+    return 10.0
+
 def get_leverage(symbol: str) -> float:
-    sym = symbol
+    sym = symbol.upper()
     info = mt5.symbol_info(sym)
     if not info:
         return 10.0
+    
+    with open(CONFIG_PATH, 'r', encoding="utf-8") as f:
+        data = json.load(f)
+    active = data.get("active")
+    if not active:
+        return 10.0  
 
     value = getattr(info, "path", "")
     if isinstance(value, bytes):
@@ -150,28 +212,10 @@ def get_leverage(symbol: str) -> float:
     else:
         path = str(value) if value is not None else ""
     path_norm = path.lower().strip()
+    
     if "stock" in path_norm:  
         return 5.0
-
-    segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
-    rules = [
-        (["fx crosses", "fx exotics"], 20),
-        (["fx majors"], 30),
-        (["spot metals", "energy"], 10),
-        (["crypto"], 2),
-    ]
-    for seg in segments:
-        for keywords, lev in rules:
-            for kw in keywords:
-                if (
-                    seg == kw
-                    or seg.startswith(kw + " ")
-                    or seg.startswith(kw)
-                    or seg.endswith(" " + kw)
-                    or seg.endswith(kw)
-                ):
-                    return float(lev)
-    return 10.0
+    return search_leverage_in_map(sym)
 
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
              start_capital: float, free_margin: float) -> float:

@@ -1,7 +1,7 @@
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
 import streamlit.components.v1 as components
-from mt5_executor import get_leverage
+from mt5_executor import get_leverage, switch_broker
 import streamlit as st
 import pathlib
 import os
@@ -151,7 +151,8 @@ tab = st.radio("Select View:", [
     "Manage Settings", 
     "Monitor", 
     "View Logs", 
-    "Manage Bot"], horizontal=True)
+    "Manage Bot"
+    ], horizontal=True)
 st.markdown("""
     <style>
     #telegram-mt-5-bot-dashboard {
@@ -209,20 +210,44 @@ if tab == "Manage Credentials":
         server     = st.text_input("Server",     value=b.get("server",       ""), key="mt5_srv")
 
         if st.button("Save This Broker", key="save_broker"):
-            mt5_data[selected] = {"account_id": account_id, "password": password, "server": server}
+            mt5_data[selected]["account_id"] = account_id
+            mt5_data[selected]["password"] = password
+            mt5_data[selected]["server"] = server
             save_json(MT5_CRED_PATH, mt5_data)
             st.success(f"Credentials updated for **{selected}**")
 
-        st.markdown("---")
-        # select active broker
+    st.markdown("---")
+    st.subheader("Add New Broker")
+    new_name = st.text_input("New Broker Name", key="new_broker_name")
+    new_account_id = st.text_input("New Account ID", key="new_mt5_acct")
+    new_password = st.text_input("New Password", type="password", key="new_mt5_pwd")
+    new_server = st.text_input("New Server", key="new_mt5_srv")
+
+    if st.button("Add New Broker", key="add_broker"):
+        if new_name and new_name not in mt5_data:
+            mt5_data[new_name] = {
+                "account_id": new_account_id,
+                "password": new_password,
+                "server": new_server,
+                "leverage_rules": []
+            }
+            save_json(MT5_CRED_PATH, mt5_data)
+            st.success(f"New broker **{new_name}** added")
+        else:
+            st.error("Broker name is empty or already exists.")
+
+    st.markdown("---")
+    # select active broker
+    broker_names = [k for k in mt5_data.keys() if k != "active"]  # Reload broker names in case a new one was added
+    if broker_names:
         active = mt5_data.get("active", broker_names[0])
         chosen = st.selectbox("Active Broker", broker_names,
-                              index=broker_names.index(active), key="active_broker")
+                              index=broker_names.index(active) if active in broker_names else 0, key="active_broker")
         if st.button("Set Active Broker", key="set_active"):
             mt5_data["active"] = chosen
             save_json(MT5_CRED_PATH, mt5_data)
+            switch_broker(mt5_data["active"])
             st.success(f"Active broker switched to **{chosen}**")
-
 
 elif tab == "Manage Settings":
     st.header("⚙️ Bot Settings (settings.json)")
