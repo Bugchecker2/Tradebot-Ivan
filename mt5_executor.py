@@ -165,18 +165,16 @@ def switch_broker(new_broker:str):
 def search_leverage_in_map(name: str) -> float:
     with open(CONFIG_PATH, 'r', encoding="utf-8") as f:
         data = json.load(f)
-    active = data.get("active")
-    if not active:
+    active_broker = data.get("active")
+    if not active_broker:
         return 10.0
-    if active == "MetaQuotes":
-        LEVERAGE_MAP_PATH = BASE_DIR / "leverage_maps" / "metaquotes.json"
-        return 1
-    elif active == "Libertex-PRO":
-        LEVERAGE_MAP_PATH = BASE_DIR / "leverage_maps" / "libertex-pro.json"
-    elif active == "Libertex-PRO":
-        LEVERAGE_MAP_PATH = BASE_DIR / "leverage_maps" / "libertex-pro.json"    
-    else:
-        return 10.0  
+    active_config = data.get(active_broker)
+    if not active_config:
+        return 10.0
+    name_file = active_config.get("leverage_json_file")
+    if not name_file:
+        return 10.0
+    LEVERAGE_MAP_PATH = BASE_DIR / "leverage_maps" / name_file
     if not LEVERAGE_MAP_PATH.exists():
         return 10.0
     

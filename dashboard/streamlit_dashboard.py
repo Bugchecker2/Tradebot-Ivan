@@ -1,5 +1,6 @@
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
+import requests
 import streamlit.components.v1 as components
 from mt5_executor import get_leverage, switch_broker
 import streamlit as st
@@ -285,22 +286,49 @@ elif tab == "Manage Settings":
 elif tab == "Monitor":
     st.header("📈 Monitor Trades")
     st_autorefresh(interval=1_000, key="monitor_autorefresh")
-#    if st.button("🔄 Refresh Monitor"): pass
 
     if not mt5.initialize():
         st.error("Failed to initialize MT5. Check credentials and terminal path.")
     else:
         info = mt5.account_info()
+        account_currency = info.currency  # Get account currency, e.g., 'EUR'
+
+        # Fetch exchange rate from MT5
+        tick = mt5.symbol_info_tick("EURUSD")
+        if tick:
+            rate_eur_usd = (tick.bid + tick.ask) / 2  # Mid price
+        else:
+            rate_eur_usd = 1.168  # Fallback
+        rate_usd_eur = 1 / rate_eur_usd
+
+        # Toggle switch
+        toggle_usd = st.toggle(f"Show in {'USD' if account_currency == 'EUR' else 'EUR'}", False)
+        if toggle_usd:
+            display_currency = 'USD' if account_currency == 'EUR' else 'EUR'
+        else:
+            display_currency = account_currency
+
+        symbol = '$' if display_currency == 'USD' else '€'
+
+        def convert(value, orig_cur):
+            if orig_cur == display_currency:
+                return value
+            if orig_cur == 'EUR' and display_currency == 'USD':
+                return value * rate_eur_usd
+            if orig_cur == 'USD' and display_currency == 'EUR':
+                return value * rate_usd_eur
+            return value  # Default same
+
         # P/L Today metric
         if 'start_balance' not in st.session_state:
             st.session_state['start_balance'] = info.balance
         day_pl = info.balance - st.session_state['start_balance']
-        st.metric('P/L Today', f"{day_pl:.2f}")
+        st.metric('P/L Today', f"{convert(day_pl, account_currency):.2f} {symbol}")
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("Balance",     f"{info.balance:.2f}")
-        col2.metric("Used Margin", f"{info.margin:.2f}")
-        col3.metric("Free Margin", f"{info.margin_free:.2f}")
+        col1.metric("Balance",     f"{convert(info.balance, account_currency):.2f} {symbol}")
+        col2.metric("Used Margin", f"{convert(info.margin, account_currency):.2f} {symbol}")
+        col3.metric("Free Margin", f"{convert(info.margin_free, account_currency):.2f} {symbol}")
 
         positions = mt5.positions_get() or []
         rows = []
@@ -313,6 +341,7 @@ elif tab == "Monitor":
             opened_dt = datetime.datetime.fromtimestamp(p.time, datetime.UTC)
             m_libertex = units * p.price_open  # Notional (market value)
             margin_req = getattr(sym_info, "margin_initial", 0)
+            margin_orig_cur = account_currency if margin_req > 0 else 'USD'
             if margin_req > 0:
                 margin_used = margin_req * lots
             else:
@@ -332,20 +361,18 @@ elif tab == "Monitor":
                 "Contract size": f"{contract_size:.0f}",
 #                "Units":      f"{units:.2f}",
                 "Units":       f"{units:.2f}" if units < 10 else f"{units:.0f}",
-                "Open Price": f"{p.price_open:.2f}",
-                "Market Value": f"{units * p.price_open:.2f}",
-                "Margin":       f"{margin_used:.2f}",
-                "Margin by mt5": f"{margin_mt5:.2f}",
+                "Open Price": f"{convert(p.price_open, 'USD'):.2f}",
+                "Market Value": f"{convert(units * p.price_open, 'USD'):.2f}",
+                "Margin":       f"{convert(margin_used, margin_orig_cur):.2f}",
+                "Margin by mt5": f"{convert(margin_mt5, account_currency):.2f}",
 #                "Opened At":    opened_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                "Profit":     f"{p.profit:.2f}"  
+                "Profit":     f"{convert(p.profit, account_currency):.2f}"  
             })
-
-            # New: Build Libertex-style row
             operation = "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL"  # 0=buy, 1=sell
             actual_margin = info.margin
             commission_est = - (0.001 * (units * p.price_open))
-            if p.type == mt5.POSITION_TYPE_BUY:  # Rollover for longs 
-                commission_est -= (0.0001 * (units * p.price_open))  # Tune based on time open
+            if p.type == mt5.POSITION_TYPE_BUY:  #
+                commission_est -= (0.0001 * (units * p.price_open))  
             adjusted_profit = p.profit + commission_est
             profit_pct = (adjusted_profit / actual_margin * 100) if actual_margin else 0
             tick = mt5.symbol_info_tick(p.symbol)
@@ -355,11 +382,11 @@ elif tab == "Monitor":
             libertex_rows.append({
                 "Symbol":     p.symbol,
                 "Date ": opened_dt.strftime("%d %B %Y, %H:%M:%S"), 
-                "Price": f"{p.price_open:.2f}",
+                "Price": f"{convert(p.price_open, 'USD'):.2f}",
                 "Operation": f"{operation} ↑" if operation == "BUY" else f"{operation} ↓",
                 "Multiplier": f"x {leverage:.0f}",
-                "Volume": f"€{margin_used:.2f} (x {leverage:.0f}) = €{m_libertex:.0f}",
-                "Profit": f"€{profit_close:.2f}"
+                "Volume": f"{symbol}{convert(margin_used, margin_orig_cur):.2f} (x {leverage:.0f}) = {symbol}{convert(m_libertex, 'USD'):.0f}",
+                "Profit": f"{symbol}{convert(profit_close, 'USD'):.2f}"
             })
 
         df = pd.DataFrame(rows)
@@ -368,11 +395,9 @@ elif tab == "Monitor":
             st.write("No open positions.")
         else:
             df = df[
-#                ["Ticket","Path","Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin","Margin by mt5","Opened At","Profit"]
                 ["Ticket","Path", "Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin","Margin by mt5","Profit"]
             ]
             st.table(df)
-#            pd.set_option('display.max_colwidth', 10)
 
             # New: Separate Libertex-style table
             if libertex_rows:
