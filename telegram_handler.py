@@ -66,6 +66,7 @@ state = {"sl": 0.0, "tp": 0.0}
 @client.on(events.NewMessage(chats=int(creds['group_id'])))
 async def handler(ev):
     msg = ev.raw_text.strip()
+    settings = json.load(open(SETTINGS_PATH))
     logging.info("[TG] Msg: %r" % msg)
     # Determine multiplier and active broker
     use_max = bool(mult_re.search(msg))

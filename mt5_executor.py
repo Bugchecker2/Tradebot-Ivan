@@ -167,15 +167,19 @@ def search_leverage_in_map(name: str) -> float:
         data = json.load(f)
     active_broker = data.get("active")
     if not active_broker:
+        logging.error("[Get leverage] No active broker")
         return 10.0
     active_config = data.get(active_broker)
     if not active_config:
+        logging.error("[Get leverage] No active config")
         return 10.0
     name_file = active_config.get("leverage_json_file")
     if not name_file:
+        logging.error("[Get leverage] No name file")
         return 10.0
     LEVERAGE_MAP_PATH = BASE_DIR / "leverage_maps" / name_file
     if not LEVERAGE_MAP_PATH.exists():
+        logging.warning("[Get leverage] Fallback LEVERAGE_MAP_PATH not exist")
         return 10.0
     
     with open(LEVERAGE_MAP_PATH, 'r', encoding="utf-8") as f:
@@ -190,6 +194,7 @@ def search_leverage_in_map(name: str) -> float:
                 instr = item.get("Instrument", "").upper()
                 if instr == sym:
                     return float(item["Leverage"])
+    logging.warning("[Get leverage] Fallback No Symbol in Leverage Map")
     return 10.0
 
 def get_leverage(symbol: str) -> float:
@@ -213,7 +218,32 @@ def get_leverage(symbol: str) -> float:
     
     if "stock" in path_norm:  
         return 5.0
-    return search_leverage_in_map(sym)
+    
+    lev = search_leverage_in_map(sym)
+    if lev != 10.0:
+        return lev
+    
+    # Fallback 
+    segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
+    rules = [
+        (["fx crosses", "fx exotics"], 20),
+        (["fx majors"], 30),
+        (["spot metals", "energy"], 10),
+        (["crypto"], 2),
+    ]
+    for seg in segments:
+        for keywords, lev in rules:
+            for kw in keywords:
+                if (
+                    seg == kw
+                    or seg.startswith(kw + " ")
+                    or seg.startswith(kw)
+                    or seg.endswith(" " + kw)
+                    or seg.endswith(kw)
+                ):
+                    return float(lev)
+    logging.warning("[Get leverage] Fallback at path, no exact path for symbol")
+    return 10.0
 
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
              start_capital: float, free_margin: float) -> float:
