@@ -97,18 +97,19 @@ def connect() -> bool:
     return True
 
 # — Symbol resolution helper —
-ALIAS_TO_SYMBOL = {alias.upper(): symbol for symbol, aliases in GROUPED_ALIASES.items() for alias in aliases + [symbol]}
+ALIAS_TO_SYMBOL = {alias.upper(): symbol for symbol, aliases in GROUPED_ALIASES.items()for alias in aliases + [symbol]}
+
 def resolve_symbol(sym: str) -> str:
     raw = sym.strip().upper()
     norm = raw.replace("/", "")
-    # Step 1: Check direct match in MT5 (try norm and raw)
+
     for cand in (norm, raw):
         info = mt5.symbol_info(cand)
         if info:
             if not info.visible:
                 mt5.symbol_select(cand, True)
             return cand
-    # Step 2: Check if in aliases dictionary, get canonical, then check in MT5
+
     canonical = ALIAS_TO_SYMBOL.get(norm) or ALIAS_TO_SYMBOL.get(raw)
     if canonical:
         info = mt5.symbol_info(canonical)
@@ -116,15 +117,23 @@ def resolve_symbol(sym: str) -> str:
             if not info.visible:
                 mt5.symbol_select(canonical, True)
             return canonical
-    # Step 3: Fuzzy search in all MT5 symbols
-    for s in mt5.symbols_get():
-        name, desc = s.name.upper(), getattr(s, "description", "").upper()
-        if raw in name or norm in name or raw in desc or norm in desc:
-            if not s.visible:
-                mt5.symbol_select(s.name, True)
-            return s.name
 
-    # If nothing found, error
+    candidates = []
+    for s in mt5.symbols_get():
+        name = s.name.upper()
+        desc = getattr(s, "description", "").upper()
+        desc_words = desc.split()
+
+        if (raw in name or norm in name or
+            raw in desc_words or norm in desc_words):
+            candidates.append(s)
+
+    if candidates:
+        best = min(candidates, key=lambda s: len(s.description))
+        if not best.visible:
+            mt5.symbol_select(best.name, True)
+        return best.name
+
     alert_sound()
     raise ValueError(f"No symbol_info for '{sym}'")
 
