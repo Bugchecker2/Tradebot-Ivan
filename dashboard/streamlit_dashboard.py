@@ -209,11 +209,13 @@ if tab == "Manage Credentials":
         account_id = st.text_input("Account ID", value=str(b.get("account_id", "")), key="mt5_acct")
         password   = st.text_input("Password",   value=b.get("password",     ""), type="password", key="mt5_pwd")
         server     = st.text_input("Server",     value=b.get("server",       ""), key="mt5_srv")
+        broker_file= st.text_input("Leverage Map",value=b.get("leverage_json_file",       ""), key="leverage_json_file")
 
         if st.button("Save This Broker", key="save_broker"):
             mt5_data[selected]["account_id"] = account_id
             mt5_data[selected]["password"] = password
             mt5_data[selected]["server"] = server
+            mt5_data[selected]["leverage_json_file"] = broker_file
             save_json(MT5_CRED_PATH, mt5_data)
             st.success(f"Credentials updated for **{selected}**")
 
@@ -223,6 +225,7 @@ if tab == "Manage Credentials":
     new_account_id = st.text_input("New Account ID", key="new_mt5_acct")
     new_password = st.text_input("New Password", type="password", key="new_mt5_pwd")
     new_server = st.text_input("New Server", key="new_mt5_srv")
+    new_broker_file = st.text_input("New Leverage Map", key="add_leverage_json_file")
 
     if st.button("Add New Broker", key="add_broker"):
         if new_name and new_name not in mt5_data:
@@ -230,7 +233,7 @@ if tab == "Manage Credentials":
                 "account_id": new_account_id,
                 "password": new_password,
                 "server": new_server,
-                "leverage_rules": []
+                "leverage_rules": new_broker_file
             }
             save_json(MT5_CRED_PATH, mt5_data)
             st.success(f"New broker **{new_name}** added")

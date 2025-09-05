@@ -1,3 +1,4 @@
+from collections import Counter
 import os
 import json
 import math
@@ -218,6 +219,8 @@ def get_leverage(symbol: str) -> float:
     if not active:
         return 10.0  
 
+    broker_name = active.lower()
+
     value = getattr(info, "path", "")
     if isinstance(value, bytes):
         path = value.decode(errors="ignore")
@@ -225,34 +228,66 @@ def get_leverage(symbol: str) -> float:
         path = str(value) if value is not None else ""
     path_norm = path.lower().strip()
     
-    if "stock" in path_norm:  
-        return 5.0
-    
     lev = search_leverage_in_map(sym)
     if lev != 10.0:
         return lev
     
-    # Fallback 
-    segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
-    rules = [
-        (["fx crosses", "fx exotics"], 20),
-        (["fx majors"], 30),
-        (["spot metals", "energy"], 10),
-        (["crypto"], 2),
-    ]
-    for seg in segments:
-        for keywords, lev in rules:
-            for kw in keywords:
-                if (
-                    seg == kw
-                    or seg.startswith(kw + " ")
-                    or seg.startswith(kw)
-                    or seg.endswith(" " + kw)
-                    or seg.endswith(kw)
-                ):
-                    return float(lev)
-    logging.warning("[Get leverage] Fallback at path, no exact path for symbol")
-    return 10.0
+    # Fallback based on broker type
+    if "metaquotes" in broker_name:
+        return 1.0
+    elif "demo" in broker_name:
+        active_config = data.get(active)
+        if not active_config:
+            return 10.0
+        name_file = active_config.get("leverage_json_file")
+        if not name_file:
+            return 10.0
+        LEVERAGE_MAP_PATH = BASE_DIR / "leverage_maps" / name_file
+        if not LEVERAGE_MAP_PATH.exists():
+            return 10.0
+        with open(LEVERAGE_MAP_PATH, 'r', encoding="utf-8") as f:
+            leverage_data = json.load(f)
+        leverages = []
+        for category in leverage_data:
+            if category == "platform": 
+                continue
+            items = leverage_data[category]
+            if isinstance(items, list):
+                for item in items:
+                    leverages.append(float(item["Leverage"]))
+        if not leverages:
+            logging.warning("[Get leverage] No leverages found in map for demo fallback")
+            return 10.0
+        most_common = Counter(leverages).most_common(1)
+        if most_common:
+            return most_common[0][0]
+        return 10.0
+    else:
+        # Real accounts fallback
+        segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
+        rules = [
+            (["fx crosses", "fx exotics"], 20.0),
+            (["fx majors"], 30.0),
+            (["spot metals/XAUEUR"], 300.0), 
+            (["crypto"], 2.0),
+            (["crypto"], 2.0),
+            (["stocks"], 5.0),  # Include stocks in rules for consistency
+        ]
+        if "stock" in path_norm:  
+            return 5.0
+        for seg in segments:
+            for keywords, lev_val in rules:
+                for kw in keywords:
+                    if (
+                        seg == kw
+                        or seg.startswith(kw + " ")
+                        or seg.startswith(kw)
+                        or seg.endswith(" " + kw)
+                        or seg.endswith(kw)
+                    ):
+                        return lev_val
+        logging.warning("[Get leverage] Fallback at path, no exact path for symbol")
+        return 10.0
 
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
              start_capital: float, free_margin: float) -> float:
