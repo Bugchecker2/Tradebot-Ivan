@@ -235,59 +235,30 @@ def get_leverage(symbol: str) -> float:
     # Fallback based on broker type
     if "metaquotes" in broker_name:
         return 1.0
-    elif "demo" in broker_name:
-        active_config = data.get(active)
-        if not active_config:
-            return 10.0
-        name_file = active_config.get("leverage_json_file")
-        if not name_file:
-            return 10.0
-        LEVERAGE_MAP_PATH = BASE_DIR / "leverage_maps" / name_file
-        if not LEVERAGE_MAP_PATH.exists():
-            return 10.0
-        with open(LEVERAGE_MAP_PATH, 'r', encoding="utf-8") as f:
-            leverage_data = json.load(f)
-        leverages = []
-        for category in leverage_data:
-            if category == "platform": 
-                continue
-            items = leverage_data[category]
-            if isinstance(items, list):
-                for item in items:
-                    leverages.append(float(item["Leverage"]))
-        if not leverages:
-            logging.warning("[Get leverage] No leverages found in map for demo fallback")
-            return 10.0
-        most_common = Counter(leverages).most_common(1)
-        if most_common:
-            return most_common[0][0]
-        return 10.0
-    else:
-        # Real accounts fallback
-        segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
-        rules = [
-            (["fx crosses", "fx exotics"], 20.0),
-            (["fx majors"], 30.0),
-            (["spot metals/XAUEUR"], 300.0), 
-            (["crypto"], 2.0),
-            (["crypto"], 2.0),
-            (["stocks"], 5.0),  # Include stocks in rules for consistency
-        ]
-        if "stock" in path_norm:  
-            return 5.0
-        for seg in segments:
-            for keywords, lev_val in rules:
-                for kw in keywords:
-                    if (
-                        seg == kw
-                        or seg.startswith(kw + " ")
-                        or seg.startswith(kw)
-                        or seg.endswith(" " + kw)
-                        or seg.endswith(kw)
-                    ):
-                        return lev_val
-        logging.warning("[Get leverage] Fallback at path, no exact path for symbol")
-        return 10.0
+    
+    segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
+    rules = [
+        (["fx crosses", "fx exotics"], 20.0),
+        (["fx majors"], 30.0),
+        (["spot metals/XAUEUR"], 20.0), 
+        (["crypto"], 2.0),
+        (["stocks"], 5.0),  # Include stocks in rules for consistency
+    ]
+    if "stock" in path_norm:  
+        return 5.0
+    for seg in segments:
+        for keywords, lev_val in rules:
+            for kw in keywords:
+                if (
+                    seg == kw
+                    or seg.startswith(kw + " ")
+                    or seg.startswith(kw)
+                    or seg.endswith(" " + kw)
+                    or seg.endswith(kw)
+                ):
+                    return lev_val
+    logging.warning("[Get leverage] Fallback at path, no exact path for symbol")
+    return 10.0
 
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
              start_capital: float, free_margin: float) -> float:
@@ -324,7 +295,7 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
                 p_lev = get_leverage(p.symbol)
                 margin = (p.volume * p_cs * p.price_open) / p_lev if p_lev > 0 else 0
                 margin_mt5 = mt5.order_calc_margin(p.type, p.symbol, p.volume, p.price_open)
-                sum_margin += margin
+                sum_margin += margin_mt5
             else:
                 logging.error("[Margin Calculation] no info for symbol adde defaul margine")
                 sum_margin += p.volume * 100000 * p.price_open / 30  # or default
