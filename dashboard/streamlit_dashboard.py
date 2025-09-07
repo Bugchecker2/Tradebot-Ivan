@@ -14,6 +14,7 @@ import psutil
 import signal
 import logging
 import sys, datetime
+import re
 
 # for auto‑refresh
 from streamlit_autorefresh import st_autorefresh
@@ -182,14 +183,54 @@ st.markdown("""
 if tab == "Manage Credentials":
     st.header("🔑 Credentials")
 
-    # — Telegram credentials —
+    # Load settings for the toggle
+    settings = load_json(SETTINGS_PATH, {})
     creds = load_json(CRED_PATH, {}) or {}
+
+    listen_to_all = st.checkbox("Listen to all channels", value=settings.get("listen_to_all_channels", True))
+    group_ids_text = st.text_area(
+        "Group IDs", 
+        value="\n".join(creds.get("group_ids", [])), 
+        help="Enter channel/group IDs (negative integers, e.g., -1001234567890)"
+    )
+    
+    # Parse for preview/validation
+    group_ids_parsed = [gid.strip() for gid in re.split(r'[, \n]+', group_ids_text.replace('\n', ',')) if gid.strip()]
+    
+    if not listen_to_all and group_ids_parsed:
+        # If not all, show selectbox for active index
+        default_idx = creds.get("active_group_index", 0)
+        selected_idx = st.selectbox(
+            "Active Channel (switch here)", 
+            options=range(len(group_ids_parsed)), 
+            index=min(default_idx, len(group_ids_parsed) - 1),
+            format_func=lambda i: f"Index {i}: {group_ids_parsed[i]}"
+        )
+    else:
+        selected_idx = 0  # Default, not used if all
+
     api_id   = st.text_input("API ID",   value=str(creds.get("api_id", "")))
     api_hash = st.text_input("API Hash", value=creds.get("api_hash", ""))
-    group_id = st.text_input("Group ID", value=str(creds.get("group_id", "")))
+    
     if st.button("Save Telegram Credentials"):
-        save_json(CRED_PATH, {"api_id": api_id, "api_hash": api_hash, "group_id": group_id})
-        st.success("Telegram credentials saved")
+        # Parse and save group_ids
+        new_creds = {
+            "api_id": api_id, 
+            "api_hash": api_hash, 
+            "group_ids": group_ids_parsed
+        }
+        if not listen_to_all:
+            new_creds["active_group_index"] = selected_idx
+        save_json(CRED_PATH, new_creds)
+        
+        # Save toggle to settings
+        settings["listen_to_all_channels"] = listen_to_all
+        save_json(SETTINGS_PATH, settings)
+        
+        st.success("Telegram credentials and settings saved!")
+        
+        # Preview
+        st.info(f"Parsed {len(group_ids_parsed)} channel(s). {'All active.' if listen_to_all else f'Active: {group_ids_parsed[selected_idx]}'}")
 
     st.markdown("---")
     st.subheader("⚙️ MT5 Brokers")
@@ -233,25 +274,12 @@ if tab == "Manage Credentials":
                 "account_id": new_account_id,
                 "password": new_password,
                 "server": new_server,
-                "leverage_rules": new_broker_file
+                "leverage_json_file": new_broker_file  # Fixed key name to match
             }
             save_json(MT5_CRED_PATH, mt5_data)
             st.success(f"New broker **{new_name}** added")
         else:
             st.error("Broker name is empty or already exists.")
-
-    st.markdown("---")
-    # select active broker
-    broker_names = [k for k in mt5_data.keys() if k != "active"]  # Reload broker names in case a new one was added
-    if broker_names:
-        active = mt5_data.get("active", broker_names[0])
-        chosen = st.selectbox("Active Broker", broker_names,
-                              index=broker_names.index(active) if active in broker_names else 0, key="active_broker")
-        if st.button("Set Active Broker", key="set_active"):
-            mt5_data["active"] = chosen
-            save_json(MT5_CRED_PATH, mt5_data)
-            switch_broker(mt5_data["active"])
-            st.success(f"Active broker switched to **{chosen}**")
 
 elif tab == "Manage Settings":
     st.header("⚙️ Bot Settings (settings.json)")

@@ -4,5 +4,6 @@
   "max_cap_percent": 30,
   "reinvest": false,
   "default_lot": 0.01,
-  "accept_PUT_CALL": true
+  "accept_PUT_CALL": true,
+  "listen_to_all_channels": false
 }

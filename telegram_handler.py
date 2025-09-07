@@ -5,15 +5,35 @@ from mt5_executor import modify_by_symbol, send_order, close_pos, modify_positio
 
 BASE_DIR      = pathlib.Path(__file__).parent
 SETTINGS_PATH = BASE_DIR / "config" / "settings.json"
+CRED_PATH     = BASE_DIR / "config" / "credentials.json"  
 logging.getLogger("telethon").setLevel(logging.WARNING)
 
 # Load Telegram credentials
-creds = json.load(open("config/credentials.json"))
-# CHANGE: Load group_ids as list and convert to ints
-group_ids = [int(gid) for gid in creds['group_ids']]
-client = TelegramClient('session', creds['api_id'], creds['hash'])
+creds = json.load(open(CRED_PATH))
+group_ids_str = creds.get('group_ids', [])
+group_ids_full = [int(gid.strip()) for gid in re.split(r'[, \n]+', ','.join(group_ids_str)) if gid.strip()]  # Parse list flexibly
+active_group_index = creds.get('active_group_index', 0)
+
+client = TelegramClient('session', creds['api_id'], creds['api_hash'])
+
 # Load settings
 settings = json.load(open(SETTINGS_PATH))
+listen_to_all = settings.get('listen_to_all_channels', True)
+
+if listen_to_all:
+    active_chats = group_ids_full
+    logging.info(f"[TG] Listen to all: {len(active_chats)} channels active")
+else:
+    if group_ids_full and 0 <= active_group_index < len(group_ids_full):
+        active_chats = [group_ids_full[active_group_index]]
+        logging.info(f"[TG] Single channel active: index {active_group_index} (ID: {active_chats[0]})")
+    else:
+        active_chats = []
+        logging.warning("[TG] No active channel selected (invalid index)")
+
+if not active_chats:
+    logging.error("[TG] No channels to listen to. Exiting.")
+    exit(1)
 
 # Play a beep on errors
 def alert_sound():
@@ -65,12 +85,12 @@ put_call_re = re.compile(r"\b(call|put)\b", re.IGNORECASE)
 # Persistent SL/TP state
 state = {"sl": 0.0, "tp": 0.0}
 
-# CHANGE: Now listens to multiple chats via the list
-@client.on(events.NewMessage(chats=group_ids))
+# Listen to active_chats (list, could be 1 or more)
+@client.on(events.NewMessage(chats=active_chats))
 async def handler(ev):
     msg = ev.raw_text.strip()
-    settings = json.load(open(SETTINGS_PATH))
-    logging.info("[TG] Msg from chat %s: %r" % (ev.chat_id, msg))  # Added chat_id for debugging which channel
+    settings = json.load(open(SETTINGS_PATH))  # Reload in case changed, but usually static
+    logging.info("[TG] Msg from chat %s: %r" % (ev.chat_id, msg))
     # Determine multiplier and active broker
     use_max = bool(mult_re.search(msg))
     active, _ = load_broker_creds()
@@ -183,12 +203,12 @@ async def run_listener():
         await client.start()
         me = await client.get_me()
         logging.info(f"[TG] Logged in as {me.username} (id={me.id})")
-        # CHANGE: Loop over group_ids to log each channel
-        for gid in group_ids:
+        # Log active channels
+        for gid in active_chats:
             try:
                 ch = await client.get_entity(gid)
-                title = getattr(ch, "title", None) or getattr(ch, "username", None)
-                logging.info(f"[TG] Listening to channel: {title or gid}")
+                title = getattr(ch, "title", None) or getattr(ch, "username", None) or str(gid)
+                logging.info(f"[TG] Listening to: {title}")
             except ValueError:
                 logging.warning(f"[TG] Could not resolve channel id {gid} (not in your dialogs or access denied)")
         await client.run_until_disconnected()
