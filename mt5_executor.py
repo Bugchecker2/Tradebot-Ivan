@@ -204,7 +204,6 @@ def search_leverage_in_map(name: str) -> float:
                 instr = item.get("Instrument", "").upper()
                 if instr == sym:
                     return float(item["Leverage"])
-    logging.warning("[Get leverage] Fallback No Symbol in Leverage Map")
     return 10.0
 
 def get_leverage(symbol: str) -> float:

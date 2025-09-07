@@ -9,7 +9,9 @@ logging.getLogger("telethon").setLevel(logging.WARNING)
 
 # Load Telegram credentials
 creds = json.load(open("config/credentials.json"))
-client = TelegramClient('session', creds['api_id'], creds['api_hash'])
+# CHANGE: Load group_ids as list and convert to ints
+group_ids = [int(gid) for gid in creds['group_ids']]
+client = TelegramClient('session', creds['api_id'], creds['hash'])
 # Load settings
 settings = json.load(open(SETTINGS_PATH))
 
@@ -17,7 +19,7 @@ settings = json.load(open(SETTINGS_PATH))
 def alert_sound():
     p = pathlib.Path(__file__).parent / "audio" / "error.wav"
     winsound.PlaySound(str(p), winsound.SND_FILENAME | winsound.SND_ASYNC)
-
+    
 # Regex for buy/sell opens: match "Ich kaufe|verkaufe" or "I Buy/Sell", symbol, optional CALL/PUT + optional strike
 trade_re = re.compile(
     r"(?:Ich\s+(Kaufe|Verkaufe)|I\s+(Buy|Sell))\s+"
@@ -63,11 +65,12 @@ put_call_re = re.compile(r"\b(call|put)\b", re.IGNORECASE)
 # Persistent SL/TP state
 state = {"sl": 0.0, "tp": 0.0}
 
-@client.on(events.NewMessage(chats=int(creds['group_id'])))
+# CHANGE: Now listens to multiple chats via the list
+@client.on(events.NewMessage(chats=group_ids))
 async def handler(ev):
     msg = ev.raw_text.strip()
     settings = json.load(open(SETTINGS_PATH))
-    logging.info("[TG] Msg: %r" % msg)
+    logging.info("[TG] Msg from chat %s: %r" % (ev.chat_id, msg))  # Added chat_id for debugging which channel
     # Determine multiplier and active broker
     use_max = bool(mult_re.search(msg))
     active, _ = load_broker_creds()
@@ -180,12 +183,14 @@ async def run_listener():
         await client.start()
         me = await client.get_me()
         logging.info(f"[TG] Logged in as {me.username} (id={me.id})")
-        try:
-            ch = await client.get_entity(int(creds["group_id"]))
-            title = getattr(ch, "title", None) or getattr(ch, "username", None)
-            logging.info(f"[TG] Listening to channel: {title or creds['group_id']}")
-        except ValueError:
-            logging.warning(f"[TG] Could not resolve channel id {creds['group_id']} (not in your dialogs)")
+        # CHANGE: Loop over group_ids to log each channel
+        for gid in group_ids:
+            try:
+                ch = await client.get_entity(gid)
+                title = getattr(ch, "title", None) or getattr(ch, "username", None)
+                logging.info(f"[TG] Listening to channel: {title or gid}")
+            except ValueError:
+                logging.warning(f"[TG] Could not resolve channel id {gid} (not in your dialogs or access denied)")
         await client.run_until_disconnected()
     except Exception as e:
         logging.exception("[TG] Unexpected connection error")
