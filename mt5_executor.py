@@ -234,12 +234,31 @@ def get_leverage(symbol: str) -> float:
     # Fallback based on broker type
     if "metaquotes" in broker_name:
         return 1.0
-    
+    rules = standart_rules
     segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
-    rules = [
+    if "pro" in broker_name:
+        rules = pro_rules
+    if "demo" in broker_name:
+        rules = demo_rules
+
+    standart_rules = [
         (["fx crosses", "fx exotics"], 20.0),
         (["fx majors"], 30.0),
-        (["spot metals/XAUEUR"], 20.0), 
+        (["spot metals/XAUEUR","spot metals/XAUUSD"], 20.0), 
+        (["crypto"], 2.0),
+        (["stocks"], 5.0),  # Include stocks in rules for consistency
+    ]
+    demo_rules = [
+        (["fx crosses", "fx exotics"], 20.0),
+        (["fx majors"], 30.0),
+        (["spot metals/XAUEUR","spot metals/XAUUSD"], 20.0), 
+        (["crypto"], 2.0),
+        (["stocks"], 5.0),  # Include stocks in rules for consistency
+    ]
+    pro_rules = [
+        (["fx crosses", "fx exotics"], 20.0),
+        (["fx majors"], 30.0),
+        (["spot metals/XAUEUR","spot metals/XAUUSD"], 20.0), 
         (["crypto"], 2.0),
         (["stocks"], 5.0),  # Include stocks in rules for consistency
     ]

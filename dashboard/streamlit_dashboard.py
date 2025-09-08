@@ -179,7 +179,7 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
-
+#####################
 if tab == "Manage Credentials":
     st.header("🔑 Credentials")
 
@@ -232,6 +232,7 @@ if tab == "Manage Credentials":
         # Preview
         st.info(f"Parsed {len(group_ids_parsed)} channel(s). {'All active.' if listen_to_all else f'Active: {group_ids_parsed[selected_idx]}'}")
 
+
     st.markdown("---")
     st.subheader("⚙️ MT5 Brokers")
 
@@ -241,45 +242,112 @@ if tab == "Manage Credentials":
 
     # extract broker names (all keys except 'active')
     broker_names = [k for k in mt5_data.keys() if k != "active"]
+    
     if not broker_names:
-        st.error("No brokers defined in mt5_credentials.json")
-    else:
-        # edit-selected broker
-        selected = st.selectbox("Edit Broker", broker_names, key="edit_broker")
-        b = mt5_data[selected]
-        account_id = st.text_input("Account ID", value=str(b.get("account_id", "")), key="mt5_acct")
-        password   = st.text_input("Password",   value=b.get("password",     ""), type="password", key="mt5_pwd")
-        server     = st.text_input("Server",     value=b.get("server",       ""), key="mt5_srv")
-        broker_file= st.text_input("Leverage Map",value=b.get("leverage_json_file",       ""), key="leverage_json_file")
+        st.warning("No brokers defined yet. You can add one below.")
 
-        if st.button("Save This Broker", key="save_broker"):
-            mt5_data[selected]["account_id"] = account_id
-            mt5_data[selected]["password"] = password
-            mt5_data[selected]["server"] = server
-            mt5_data[selected]["leverage_json_file"] = broker_file
-            save_json(MT5_CRED_PATH, mt5_data)
-            st.success(f"Credentials updated for **{selected}**")
+    # Mode selection (default: Modify)
+    mode = st.radio("Broker Action", ["Modify Broker", "Add Broker"], index=0, horizontal=True, key="broker_mode")
 
-    st.markdown("---")
-    st.subheader("Add New Broker")
-    new_name = st.text_input("New Broker Name", key="new_broker_name")
-    new_account_id = st.text_input("New Account ID", key="new_mt5_acct")
-    new_password = st.text_input("New Password", type="password", key="new_mt5_pwd")
-    new_server = st.text_input("New Server", key="new_mt5_srv")
-    new_broker_file = st.text_input("New Leverage Map", key="add_leverage_json_file")
+    broker_name = None
+    can_proceed = False
+    selected_broker = None
 
-    if st.button("Add New Broker", key="add_broker"):
-        if new_name and new_name not in mt5_data:
-            mt5_data[new_name] = {
-                "account_id": new_account_id,
-                "password": new_password,
-                "server": new_server,
-                "leverage_json_file": new_broker_file  # Fixed key name to match
-            }
-            save_json(MT5_CRED_PATH, mt5_data)
-            st.success(f"New broker **{new_name}** added")
+    if mode == "Modify Broker":
+        if broker_names:
+            selected_broker = st.selectbox("Select Broker to Modify", options=broker_names, key="select_broker")
+            broker_name = selected_broker
+            can_proceed = True
         else:
-            st.error("Broker name is empty or already exists.")
+            st.warning("No existing brokers to modify. Switch to 'Add Broker' mode.")
+    else:  # Add Broker
+        broker_name = st.text_input("New Broker Name", key="new_broker_name")
+        can_proceed = True
+
+    # Common fields - prefill if modifying, else empty
+    if mode == "Modify Broker" and broker_names:
+        account_id = st.text_input("Account ID", value=str(mt5_data[selected_broker].get("account_id", "")), key="account_id")
+        password = st.text_input("Password", value=mt5_data[selected_broker].get("password", ""), type="password", key="password")
+        server = st.text_input("Server", value=mt5_data[selected_broker].get("server", ""), key="server")
+    else:
+        account_id = st.text_input("Account ID", value="", key="account_id")
+        password = st.text_input("Password", value="", type="password", key="password")
+        server = st.text_input("Server", value="", key="server")
+
+    # Leverage Map with JSON uploader
+    current_leverage = ""
+    if mode == "Modify Broker" and selected_broker:
+        current_leverage = mt5_data[selected_broker].get("leverage_json_file", "")
+        if current_leverage:
+            st.info(f"Current Leverage Map: {current_leverage}")
+
+    uploaded_file = st.file_uploader(
+        "Leverage Map JSON File", 
+        type=["json"], 
+        key=f"leverage_uploader_{'modify' if mode == 'Modify Broker' else 'add'}"
+    )
+    leverage_file = current_leverage
+    if uploaded_file is not None:
+        # Ensure directory exists
+        leverage_dir = BASE_DIR.parent / "leverage_maps"
+        leverage_dir.mkdir(parents=True, exist_ok=True)
+        save_path = leverage_dir / uploaded_file.name
+        with open(save_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        leverage_file = uploaded_file.name
+        st.success(f"JSON file '{uploaded_file.name}' uploaded to leverage_maps/")
+
+    # Button
+    action = "Modify" if mode == "Modify Broker" else "Add"
+    button_disabled = not (broker_name and account_id and password and server and can_proceed)
+    
+    if st.button(f"{action} Broker", disabled=button_disabled, key="broker_action"):
+        if broker_name and account_id and password and server:
+            if mode == "Modify Broker":
+                if broker_name in mt5_data:
+                    mt5_data[broker_name].update({
+                        "account_id": account_id,
+                        "password": password,
+                        "server": server,
+                        "leverage_json_file": leverage_file
+                    })
+                    st.success(f"Broker **{broker_name}** modified successfully!")
+                else:
+                    st.error("Selected broker not found.")
+            else:  # Add
+                if broker_name not in mt5_data:
+                    mt5_data[broker_name] = {
+                        "account_id": account_id,
+                        "password": password,
+                        "server": server,
+                        "leverage_json_file": leverage_file
+                    }
+                    st.success(f"New broker **{broker_name}** added successfully!")
+                else:
+                    st.error("Broker name already exists.")
+            
+            save_json(MT5_CRED_PATH, mt5_data)
+        else:
+            st.error("Please fill all fields.")
+    st.markdown("---")
+    
+    # select active broker (reload names in case changed)
+    broker_names = [k for k in mt5_data.keys() if k != "active"]  # Reload in case a new one was added/modified
+    if broker_names:
+        active = mt5_data.get("active", broker_names[0] if broker_names else None)
+        chosen_index = broker_names.index(active) if active in broker_names else 0
+        chosen = st.selectbox("Active Broker", broker_names,
+                              index=chosen_index, key="active_broker")
+        if st.button("Set Active Broker", key="set_active"):
+            mt5_data["active"] = chosen
+            save_json(MT5_CRED_PATH, mt5_data)
+            switch_broker(mt5_data["active"])
+            st.success(f"Active broker switched to **{chosen}**")
+    else:
+        st.info("No brokers available to set as active.")
+
+
+            ######
 
 elif tab == "Manage Settings":
     st.header("⚙️ Bot Settings (settings.json)")
