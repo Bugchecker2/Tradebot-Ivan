@@ -235,9 +235,11 @@ def get_leverage(symbol: str) -> float:
     if "metaquotes" in broker_name:
         return 1.0
     standart_rules = [
-        (["fx crosses", "fx exotics"], 20.0),
         (["fx majors"], 30.0),
+        (["fx crosses", "fx exotics"], 20.0),
         (["spot metals/XAUEUR","spot metals/XAUUSD"], 20.0), 
+        (["spot metals"], 10.0), 
+        (["indices"], 20.0), 
         (["crypto"], 2.0),
         (["stocks"], 5.0),  # Include stocks in rules for consistency
     ]
@@ -249,17 +251,25 @@ def get_leverage(symbol: str) -> float:
         rules = demo_rules
 
     demo_rules = [
-        (["fx crosses", "fx exotics"], 20.0),
-        (["fx majors"], 30.0),
-        (["spot metals/XAUEUR","spot metals/XAUUSD"], 20.0), 
-        (["crypto"], 2.0),
+        (["fx majors"], 500.0),
+        (["fx crosses"], 200.0),
+        (["fx exotics"], 200.0),
+        (["spot metals/XAUEUR","spot metals/XAUUSD"], 200.0), 
+        (["spot metals"], 100.0), 
+        (["metals"], 50.0),
+        (["indices"], 200.0), 
+        (["crypto"], 20.0),
         (["stocks"], 5.0),  # Include stocks in rules for consistency
     ]
     pro_rules = [
-        (["fx crosses", "fx exotics"], 20.0),
-        (["fx majors"], 30.0),
-        (["spot metals/XAUEUR","spot metals/XAUUSD"], 20.0), 
-        (["crypto"], 2.0),
+        (["fx majors"], 999.0),
+        (["fx crosses"], 500.0),
+        (["fx exotics"], 50.0),
+        (["spot metals/XAUEUR","spot metals/XAUUSD"], 300.0), 
+        (["spot metals"], 200.0), 
+        (["metals"], 20.0),
+        (["indices"], 200.0), 
+        (["crypto"], 30.0),
         (["stocks"], 5.0),  # Include stocks in rules for consistency
     ]
     if "stock" in path_norm:  
@@ -355,8 +365,8 @@ def send_order(
         return fake(-9, "init failed")
 
     # Option symbol handling
-    if opt and strike is not None:
-        symbol = build_option_symbol(symbol, strike, opt)
+#    if opt and strike is not None:
+#        symbol = build_option_symbol(symbol, strike, opt)
 
     info = mt5.symbol_info(symbol)
     if not info or info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
