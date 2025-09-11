@@ -290,62 +290,50 @@ def get_leverage(symbol: str) -> float:
 
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
              start_capital: float, free_margin: float) -> float:
-    """
-    LOT = (AvailableMoney * lot_percent * leverage) / (price * contract_size)
-    Margin
-    Margin provided function order_calc_margin
-
-    AvailableMoney:
-      • if reinvest=False & lot_method=='percent_remaining': 
-            start_capital – sum(margin of all open positions)
-      • if reinvest=False & lot_method=='percent_start': 
-            start_capital
-      • if reinvest=True  & lot_method=='percent_remaining': 
-            free_margin
-      • if reinvest=True  & lot_method=='percent_start': 
-            current balance
-    """
     info = mt5.symbol_info(symbol)
-    if not info or info.trade_contract_size<=0 or price<=0:
+    if not info or info.trade_contract_size <= 0 or price <= 0:
         return settings.get("default_lot", 0.01)
 
-    # 1) Determine available money
-    reinvest = settings.get("reinvest", False)
-    method   = settings.get("lot_method", "percent_remaining")
-    if reinvest:
-        avail = free_margin if method=="percent_remaining" else balance
-    else:
-        sum_margin = 0.0
-        for p in mt5.positions_get() or []: #TODO: handle if 0 positions on account
-            p_info = mt5.symbol_info(p.symbol)
-            if p_info:
-                p_cs = p_info.trade_contract_size
-                p_lev = get_leverage(p.symbol)
-                margin = (p.volume * p_cs * p.price_open) / p_lev if p_lev > 0 else 0
-                margin_mt5 = mt5.order_calc_margin(p.type, p.symbol, p.volume, p.price_open)
-                sum_margin += margin_mt5
-            else:
-                logging.error("[Margin Calculation] no info for symbol adde defaul margine")
-                sum_margin += p.volume * 100000 * p.price_open / 30  # or default
-        avail = start_capital - sum_margin if method == "percent_remaining" else start_capital
-        avail = max(avail, 0.0)
-    logging.info(f"[Margin Calculation] avail. money = {avail}")
+    # 1) Determine available money (forced to free_margin for 20% of current free)
+    avail = free_margin
+    logging.info(f"[Margin Calculation] avail. money = {avail}; free_margin = {free_margin}; balance = {balance}; start_capital = {start_capital}")
 
-    pct      = settings["lot_percent"] / 100.0
-    cap_pct  = settings.get("max_cap_percent", 20) / 100.0
-    risk_amt = min(avail * pct, start_capital * cap_pct)
+    pct = settings["lot_percent"] / 100.0
+    cap_pct = settings.get("max_cap_percent", 20) / 100.0
+    risk_amt = avail * pct  # Pure 20% of free_margin
+    logging.info(f"[Risk Calculation] pct = {pct}; cap_pct = {cap_pct}; initial risk_amt = {risk_amt}")
 
-    # 3) Leverage & contract size
-    leverage      = get_leverage(symbol)
-    logging.info(f"[LEVERAGE TEST] Calculated leverage = {leverage}")
+    risk_amt = min(risk_amt, free_margin)
+    logging.info(f"[Risk Adjustment] adjusted risk_amt = {risk_amt} (limited by free_margin)")
+
+    # 3) Leverage & contract size (now dynamic!)
+    leverage = get_leverage(symbol)
     contract_size = info.trade_contract_size
+    logging.info(f"[Instrument Info] leverage = {leverage}; contract_size = {contract_size}; price = {price}")
 
     # 4) Raw lot formula
-    raw_lot = (risk_amt * leverage) / (price * contract_size)
+    raw_lot = (risk_amt * leverage) / (price * contract_size) if (price * contract_size) > 0 else 0
+    logging.info(f"[Lot Calculation] raw_lot = {raw_lot}")
 
-    # 5) Snap to broker’s steps
+    # 5) Snap to broker’s steps (floor first)
     step, vmin, vmax = info.volume_step, info.volume_min, info.volume_max
-    qty = max(vmin, min(math.floor(raw_lot/step)*step, vmax))
+    floored = math.floor(raw_lot / step) * step
+    qty = max(vmin, min(floored, vmax)) if floored >= vmin else 0.0
+    logging.info(f"[Lot Snapping] step = {step}; vmin = {vmin}; vmax = {vmax}; floored = {floored}; initial qty = {qty}")
+
+    # 6) Maximize lot without exceeding risk_amt (if snapping made it under, try to increase)
+    expected_margin = mt5.order_calc_margin(0, symbol, qty, price)
+    while qty + step <= vmax:
+        next_qty = qty + step
+        next_margin = mt5.order_calc_margin(0, symbol, next_qty, price)
+        if next_margin is None or next_margin > min(risk_amt, free_margin):
+            break
+        qty = next_qty
+        expected_margin = next_margin
+    if expected_margin > min(risk_amt, free_margin) or qty < vmin:
+        qty = 0.0
+    logging.info(f"[Lot Maximization] Final qty = {qty}; expected_margin = {expected_margin}")
+
     return round(qty, 8)
 
 # — Main trading function —
@@ -363,10 +351,6 @@ def send_order(
     if not connect():
         alert_sound()
         return fake(-9, "init failed")
-
-    # Option symbol handling
-#    if opt and strike is not None:
-#        symbol = build_option_symbol(symbol, strike, opt)
 
     info = mt5.symbol_info(symbol)
     if not info or info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
@@ -389,20 +373,6 @@ def send_order(
     balance     = acct_info.balance
     free_margin = acct_info.margin_free
     start_cap   = INITIAL_BALANCE
-    # if multiplier:
-    #     # compute how much volume your risk % buys given initial margin requirement
-    #     pct        = settings["lot_percent"] / 100.0
-    #     base       = INITIAL_BALANCE if settings.get("lot_method") == "percent_start" else balance
-    #     risk_amt   = min(base * pct, base * (settings.get("max_cap_percent", 20)/100.0))
-    #     # margin_initial is the margin required per one contract; fallback to trade_contract_size*price
-    #     margin_req = getattr(info, "margin_initial", 0)
-    #     if not margin_req or margin_req <= 0:
-    #         margin_req = info.trade_contract_size * price
-    #     raw = risk_amt / margin_req
-    #     step, vmin, vmax = info.volume_step, info.volume_min, info.volume_max
-    #     lot        = max(vmin, min(math.floor(raw/step)*step, vmax))
-    #     logging.info(f"[MT5] MULT lot={lot:.4f} (risk={settings['lot_percent']}%, margin_req={margin_req:.4f}) for {symbol}@{price:.4f}")
-    # else:
     lot = calc_lot(symbol, settings, balance, price, start_cap, free_margin)
     logging.info(f"[MT5] lot={lot:.4f} for {symbol}@{price:.4f}")
 

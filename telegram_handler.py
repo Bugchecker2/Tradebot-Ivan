@@ -1,4 +1,4 @@
-import re, json, logging, pathlib, winsound
+import re, json, logging, pathlib, winsound, asyncio
 import MetaTrader5 as mt5
 from telethon import TelegramClient, events
 from mt5_executor import modify_by_symbol, send_order, close_pos, modify_position, resolve_symbol, load_broker_creds
@@ -8,32 +8,9 @@ SETTINGS_PATH = BASE_DIR / "config" / "settings.json"
 CRED_PATH     = BASE_DIR / "config" / "credentials.json"  
 logging.getLogger("telethon").setLevel(logging.WARNING)
 
-# Load Telegram credentials
+# Load Telegram credentials (for client init)
 creds = json.load(open(CRED_PATH))
-group_ids_str = creds.get('group_ids', [])
-group_ids_full = [int(gid.strip()) for gid in re.split(r'[, \n]+', ','.join(group_ids_str)) if gid.strip()]  # Parse list flexibly
-active_group_index = creds.get('active_group_index', 0)
-
 client = TelegramClient('session', creds['api_id'], creds['api_hash'])
-
-# Load settings
-settings = json.load(open(SETTINGS_PATH))
-listen_to_all = settings.get('listen_to_all_channels', True)
-
-if listen_to_all:
-    active_chats = group_ids_full
-    logging.info(f"[TG] Listen to all: {len(active_chats)} channels active")
-else:
-    if group_ids_full and 0 <= active_group_index < len(group_ids_full):
-        active_chats = [group_ids_full[active_group_index]]
-        logging.info(f"[TG] Single channel active: index {active_group_index} (ID: {active_chats[0]})")
-    else:
-        active_chats = []
-        logging.warning("[TG] No active channel selected (invalid index)")
-
-if not active_chats:
-    logging.error("[TG] No channels to listen to. Exiting.")
-    exit(1)
 
 # Play a beep on errors
 def alert_sound():
@@ -51,7 +28,7 @@ trade_re = re.compile(
 # Regex for closes
 close_re = re.compile(
     r"(?:Ich\s+schließe|CLOSE)\s+"
-    r"([A-Za-z0-9/._]+)"                # symbol
+    r"([A-Za-z0-9/.]+)"                # symbol
     r"(?:\s+(Call|Put)(?:\s*(\d+))?)?",   # optional CALL/PUT + optional strike
     re.IGNORECASE
 )
@@ -85,12 +62,11 @@ put_call_re = re.compile(r"\b(call|put)\b", re.IGNORECASE)
 # Persistent SL/TP state
 state = {"sl": 0.0, "tp": 0.0}
 
-# Listen to active_chats (list, could be 1 or more)
-@client.on(events.NewMessage(chats=active_chats))
-async def handler(ev):
-    msg = ev.raw_text.strip()
+# The event handler (without decorator - will be added dynamically)
+async def the_handler(event):
+    msg = event.raw_text.strip()
     settings = json.load(open(SETTINGS_PATH))  # Reload in case changed, but usually static
-    logging.info("[TG] Msg from chat %s: %r" % (ev.chat_id, msg))
+    logging.info("[TG] Msg from chat %s: %r" % (event.chat_id, msg))
     # Determine multiplier and active broker
     use_max = bool(mult_re.search(msg))
     active, _ = load_broker_creds()
@@ -197,20 +173,73 @@ async def handler(ev):
         return
     logging.debug("[TG] no match")
 
+async def update_listener_chats():
+    client.remove_event_handler(the_handler, events.NewMessage)
+    creds = json.load(open(CRED_PATH))
+    group_ids_full = [int(gid.strip()) for gid in creds.get('group_ids', []) if gid.strip()]
+    active_group_index = creds.get('active_group_index', 0)
+    settings = json.load(open(SETTINGS_PATH))
+    listen_to_all = settings.get('listen_to_all_channels', True)
+    
+    # Determine potential chats
+    if listen_to_all:
+        potential_chats = group_ids_full
+        logging.info(f"[TG] Config update: Listen to all {len(potential_chats)} channels")
+    else:
+        if group_ids_full and 0 <= active_group_index < len(group_ids_full):
+            potential_chats = [group_ids_full[active_group_index]]
+            logging.info(f"[TG] Config update: Single channel active: index {active_group_index} (ID: {potential_chats[0]})")
+        else:
+            potential_chats = []
+            logging.warning("[TG] Config update: No active channel selected (invalid index)")
+    
+    if not potential_chats:
+        logging.warning("[TG] No channels to listen to after update. No handler added.")
+        return
+    valid_chats = []
+    for gid in potential_chats:
+        try:
+            entity = await client.get_entity(gid)
+            title = getattr(entity, "title", None) or getattr(entity, "username", None) or str(gid)
+            logging.info(f"[TG] Valid and listening to: {title} (ID: {gid})")
+            valid_chats.append(gid)
+        except ValueError as e:
+            logging.warning(f"[TG] Could not access channel id {gid} (not in dialogs or access denied): {e}")
+        except Exception as e:
+            logging.warning(f"[TG] Unexpected error resolving channel id {gid}: {e}")
+    
+    if not valid_chats:
+        logging.error("[TG] No accessible channels after update. Check your membership/access. No handler added.")
+        return
+    
+    # Add the event handler for valid chats
+    client.add_event_handler(the_handler, events.NewMessage(chats=valid_chats))
+    logging.info(f"[TG] Successfully updated listener for {len(valid_chats)} valid channel(s)")
+
+async def monitor_config():
+    while True:
+        await asyncio.sleep(10)  # Check every 10 seconds for config changes
+        await update_listener_chats()
+
 async def run_listener():
+    monitor_task = None
     try:
-        # Start and log who & where we're listening
+        # Start client first
         await client.start()
         me = await client.get_me()
         logging.info(f"[TG] Logged in as {me.username} (id={me.id})")
-        # Log active channels
-        for gid in active_chats:
-            try:
-                ch = await client.get_entity(gid)
-                title = getattr(ch, "title", None) or getattr(ch, "username", None) or str(gid)
-                logging.info(f"[TG] Listening to: {title}")
-            except ValueError:
-                logging.warning(f"[TG] Could not resolve channel id {gid} (not in your dialogs or access denied)")
+        
+        # Initial setup
+        await update_listener_chats()
+        
+        # Start monitor task for dynamic updates
+        monitor_task = asyncio.create_task(monitor_config())
+        
+        # Run until disconnected
         await client.run_until_disconnected()
     except Exception as e:
         logging.exception("[TG] Unexpected connection error")
+    finally:
+        await client.disconnect()
+        if monitor_task:
+            monitor_task.cancel()
