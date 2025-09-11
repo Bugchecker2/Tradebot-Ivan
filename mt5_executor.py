@@ -288,25 +288,44 @@ def get_leverage(symbol: str) -> float:
     logging.warning("[Get leverage] Fallback at path, no exact path for symbol")
     return 10.0
 
+
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
              start_capital: float, free_margin: float) -> float:
+    """
+    LOT = (AvailableMoney * lot_percent * leverage) / (price * contract_size)
+    Margin
+    Margin provided function order_calc_margin
+    AvailableMoney:
+      • if reinvest=False & lot_method=='percent_remaining': 
+            start_capital – sum(margin of all open positions)
+      • if reinvest=False & lot_method=='percent_start': 
+            start_capital
+      • if reinvest=True  & lot_method=='percent_remaining': 
+            free_margin
+      • if reinvest=True  & lot_method=='percent_start': 
+            current balance
+    """
     info = mt5.symbol_info(symbol)
     if not info or info.trade_contract_size <= 0 or price <= 0:
         return settings.get("default_lot", 0.01)
 
-    # 1) Determine available money (forced to free_margin for 20% of current free)
+    # 1) Determine available money
+    # Force using free_margin as available money to base on 20% of free margin
     avail = free_margin
     logging.info(f"[Margin Calculation] avail. money = {avail}; free_margin = {free_margin}; balance = {balance}; start_capital = {start_capital}")
 
     pct = settings["lot_percent"] / 100.0
     cap_pct = settings.get("max_cap_percent", 20) / 100.0
-    risk_amt = avail * pct  # Pure 20% of free_margin
+    # Remove cap to purely use pct of avail (free_margin)
+    risk_amt = avail * pct
+    # risk_amt = min(avail * pct, start_capital * cap_pct)  # Original, commented out
     logging.info(f"[Risk Calculation] pct = {pct}; cap_pct = {cap_pct}; initial risk_amt = {risk_amt}")
 
+    # Limit risk_amt to free_margin to avoid overcommitment
     risk_amt = min(risk_amt, free_margin)
     logging.info(f"[Risk Adjustment] adjusted risk_amt = {risk_amt} (limited by free_margin)")
 
-    # 3) Leverage & contract size (now dynamic!)
+    # 3) Leverage & contract size
     leverage = get_leverage(symbol)
     contract_size = info.trade_contract_size
     logging.info(f"[Instrument Info] leverage = {leverage}; contract_size = {contract_size}; price = {price}")
@@ -315,24 +334,25 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
     raw_lot = (risk_amt * leverage) / (price * contract_size) if (price * contract_size) > 0 else 0
     logging.info(f"[Lot Calculation] raw_lot = {raw_lot}")
 
-    # 5) Snap to broker’s steps (floor first)
+    # 5) Snap to broker’s steps
     step, vmin, vmax = info.volume_step, info.volume_min, info.volume_max
     floored = math.floor(raw_lot / step) * step
     qty = max(vmin, min(floored, vmax)) if floored >= vmin else 0.0
-    logging.info(f"[Lot Snapping] step = {step}; vmin = {vmin}; vmax = {vmax}; floored = {floored}; initial qty = {qty}")
+    logging.info(f"[Lot Snapping] step = {step}; vmin = {vmin}; vmax = {vmax}; floored = {floored}; final qty = {qty}")
 
-    # 6) Maximize lot without exceeding risk_amt (if snapping made it under, try to increase)
+    # 6) Verify with actual margin calculation
+    # Assume type=0 for buy, adjust if needed
     expected_margin = mt5.order_calc_margin(0, symbol, qty, price)
-    while qty + step <= vmax:
-        next_qty = qty + step
-        next_margin = mt5.order_calc_margin(0, symbol, next_qty, price)
-        if next_margin is None or next_margin > min(risk_amt, free_margin):
-            break
-        qty = next_qty
-        expected_margin = next_margin
-    if expected_margin > min(risk_amt, free_margin) or qty < vmin:
-        qty = 0.0
-    logging.info(f"[Lot Maximization] Final qty = {qty}; expected_margin = {expected_margin}")
+    if expected_margin is not None and expected_margin > free_margin:
+        logging.warning(f"[Margin Check] Expected margin {expected_margin} > free_margin {free_margin}, reducing lot")
+        # Reduce by steps until it fits
+        while qty > vmin and expected_margin > free_margin:
+            qty -= step
+            qty = round(qty, 8)  # To avoid floating point issues
+            expected_margin = mt5.order_calc_margin(0, symbol, qty, price)
+        if expected_margin > free_margin or qty < vmin:
+            qty = 0.0
+        logging.info(f"[Margin Adjustment] Adjusted qty = {qty}; expected_margin = {expected_margin}")
 
     return round(qty, 8)
 
