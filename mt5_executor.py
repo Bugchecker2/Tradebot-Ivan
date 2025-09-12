@@ -227,36 +227,26 @@ def get_leverage(symbol: str) -> float:
         path = str(value) if value is not None else ""
     path_norm = path.lower().strip()
     
-    lev = search_leverage_in_map(sym)
-    if lev != 10.0:
-        return lev
-    
     # Fallback based on broker type
     if "metaquotes" in broker_name:
         return 1.0
     standart_rules = [
         (["fx majors"], 30.0),
         (["fx crosses", "fx exotics"], 20.0),
-        (["spot metals/XAUEUR","spot metals/XAUUSD"], 20.0), 
+        (["xaueur","xauusd"], 20.0), 
         (["spot metals"], 10.0), 
         (["indices"], 20.0), 
         (["crypto"], 2.0),
         (["stocks"], 5.0),  # Include stocks in rules for consistency
     ]
-    rules = standart_rules
-    segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
-    if "pro" in broker_name:
-        rules = pro_rules
-    if "demo" in broker_name:
-        rules = demo_rules
-
     demo_rules = [
         (["fx majors"], 500.0),
         (["fx crosses"], 200.0),
         (["fx exotics"], 200.0),
-        (["spot metals/XAUEUR","spot metals/XAUUSD"], 200.0), 
+        (["xaueur","xauusd"], 200.0), 
         (["spot metals"], 100.0), 
         (["metals"], 50.0),
+        (["energy"], 10.0),
         (["indices"], 200.0), 
         (["crypto"], 20.0),
         (["stocks"], 5.0),  # Include stocks in rules for consistency
@@ -265,18 +255,24 @@ def get_leverage(symbol: str) -> float:
         (["fx majors"], 999.0),
         (["fx crosses"], 500.0),
         (["fx exotics"], 50.0),
-        (["spot metals/XAUEUR","spot metals/XAUUSD"], 300.0), 
+        (["xaueur","xauusd"], 300.0), 
         (["spot metals"], 200.0), 
         (["metals"], 20.0),
         (["indices"], 200.0), 
         (["crypto"], 30.0),
         (["stocks"], 5.0),  # Include stocks in rules for consistency
     ]
+    rules = standart_rules
+    segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
+    if "pro" in broker_name:
+        rules = pro_rules
+    if "demo" in broker_name:
+        rules = demo_rules
     if "stock" in path_norm:  
         return 5.0
-    for seg in segments:
-        for keywords, lev_val in rules:
-            for kw in keywords:
+    for keywords, lev_val in rules:
+        for kw in keywords:
+            for seg in segments:
                 if (
                     seg == kw
                     or seg.startswith(kw + " ")
@@ -285,9 +281,10 @@ def get_leverage(symbol: str) -> float:
                     or seg.endswith(kw)
                 ):
                     return lev_val
-    logging.warning("[Get leverage] Fallback at path, no exact path for symbol")
+    lev = search_leverage_in_map(sym)
+    if lev != 10.0:
+        return lev
     return 10.0
-
 
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
              start_capital: float, free_margin: float) -> float:
@@ -319,26 +316,26 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
     # Remove cap to purely use pct of avail (free_margin)
     risk_amt = avail * pct
     # risk_amt = min(avail * pct, start_capital * cap_pct)  # Original, commented out
-    logging.info(f"[Risk Calculation] pct = {pct}; cap_pct = {cap_pct}; initial risk_amt = {risk_amt}")
+    logging.detailed(f"[Risk Calculation] pct = {pct}; cap_pct = {cap_pct}; initial risk_amt = {risk_amt}")
 
     # Limit risk_amt to free_margin to avoid overcommitment
     risk_amt = min(risk_amt, free_margin)
-    logging.info(f"[Risk Adjustment] adjusted risk_amt = {risk_amt} (limited by free_margin)")
+    logging.detailed(f"[Risk Adjustment] adjusted risk_amt = {risk_amt} (limited by free_margin)")
 
     # 3) Leverage & contract size
     leverage = get_leverage(symbol)
     contract_size = info.trade_contract_size
-    logging.info(f"[Instrument Info] leverage = {leverage}; contract_size = {contract_size}; price = {price}")
+    logging.detailed(f"[Instrument Info] leverage = {leverage}; contract_size = {contract_size}; price = {price}")
 
     # 4) Raw lot formula
     raw_lot = (risk_amt * leverage) / (price * contract_size) if (price * contract_size) > 0 else 0
-    logging.info(f"[Lot Calculation] raw_lot = {raw_lot}")
+    logging.detailed(f"[Lot Calculation] raw_lot = {raw_lot}")
 
     # 5) Snap to broker’s steps
     step, vmin, vmax = info.volume_step, info.volume_min, info.volume_max
     floored = math.floor(raw_lot / step) * step
     qty = max(vmin, min(floored, vmax)) if floored >= vmin else 0.0
-    logging.info(f"[Lot Snapping] step = {step}; vmin = {vmin}; vmax = {vmax}; floored = {floored}; final qty = {qty}")
+    logging.detailed(f"[Lot Snapping] step = {step}; vmin = {vmin}; vmax = {vmax}; floored = {floored}; final qty = {qty}")
 
     # 6) Verify with actual margin calculation
     # Assume type=0 for buy, adjust if needed

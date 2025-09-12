@@ -184,7 +184,6 @@ async def update_listener_chats():
     # Determine potential chats
     if listen_to_all:
         potential_chats = group_ids_full
-        logging.info(f"[TG] Config update: Listen to all {len(potential_chats)} channels")
     else:
         if group_ids_full and 0 <= active_group_index < len(group_ids_full):
             potential_chats = [group_ids_full[active_group_index]]
@@ -201,7 +200,6 @@ async def update_listener_chats():
         try:
             entity = await client.get_entity(gid)
             title = getattr(entity, "title", None) or getattr(entity, "username", None) or str(gid)
-            logging.info(f"[TG] Valid and listening to: {title} (ID: {gid})")
             valid_chats.append(gid)
         except ValueError as e:
             logging.warning(f"[TG] Could not access channel id {gid} (not in dialogs or access denied): {e}")
@@ -211,10 +209,8 @@ async def update_listener_chats():
     if not valid_chats:
         logging.error("[TG] No accessible channels after update. Check your membership/access. No handler added.")
         return
-    
     # Add the event handler for valid chats
     client.add_event_handler(the_handler, events.NewMessage(chats=valid_chats))
-    logging.info(f"[TG] Successfully updated listener for {len(valid_chats)} valid channel(s)")
 
 async def monitor_config():
     while True:

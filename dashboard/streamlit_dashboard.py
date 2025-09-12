@@ -88,6 +88,8 @@ def colorize_log_line(line):
         return f'<span style="color:gray;">{line}</span>'
     else:
         return line
+def toggle_detailed_logs():
+    logger.set_logging_enabled(st.session_state['detailed_logs'])
 
 def render_colored_log(log_path: pathlib.Path, show_debug: bool):
     if not log_path.exists():
@@ -142,6 +144,7 @@ SETTINGS_PATH = BASE_DIR.parent / "config" / "settings.json"
 BOT_INFO_PATH = BASE_DIR.parent / "config" / "bot_info.json"
 LOG_INFO      = BASE_DIR.parent / "trading_bot.log"
 LOG_DEBUG     = BASE_DIR.parent / "mt5_detailed.log"
+LOG_DETAILED  = BASE_DIR.parent / "detailed_log.log"
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="📊 Telegram-MT5 Dashboard", layout="wide")
@@ -504,42 +507,38 @@ elif tab == "Monitor":
                 df_libertex = pd.DataFrame(libertex_rows)
                 st.table(df_libertex)
 
-elif tab == "View Logs":
+if tab == "View Logs":
     st.header("📝 View Logs")
-
-    # ─── Auto‑refresh on new log lines ───
-    # rerun the script every 1 s so we pick up any appended lines immediately
-    st_autorefresh(interval=1_000, key="logs_autorefresh")
-
-    last_lof_message = None
-
     # ─── Controls ───
     col1, col2 = st.columns([1,3])
     with col1:
         if st.button("🗑️ Clear All Logs"):
-            ok1 = clear_file(LOG_INFO)
-            ok2 = clear_file(LOG_DEBUG)
-            if ok1 and ok2:
+            # Assuming clear_file is defined
+            ok = clear_file(LOG_INFO)
+            # Also clear detailed log if needed
+            ok_detailed = clear_file(LOG_DETAILED)
+            if ok and ok_detailed:
                 st.success("Logs cleared")
 
         if 'detailed_logs' not in st.session_state:
-            st.session_state['detailed_logs'] = False
+            st.session_state['detailed_logs'] = logger.return_detailed_logging()
 
         st.checkbox(
-            "Enable detailed MT5 logs",
+            "Enable detailed logs (standard or detailed view)",
             key='detailed_logs',
-            on_change=logger.set_logging_enabled,
-            args=(st.session_state['detailed_logs'],)
+            on_change=toggle_detailed_logs
+            # No need for value=; key handles it and persists in session_state
         )
 
-    # ─── Render the first 50 lines ───
+    # ─── Render the main log ───
     with col2:
-        st.subheader("Trading Bot Log")
-        render_colored_log(LOG_INFO, show_debug=st.session_state['detailed_logs'])
-
-        st.subheader("MT5 Detailed Log")
-        render_colored_log(LOG_DEBUG, show_debug=st.session_state['detailed_logs'])
-
+        if st.session_state['detailed_logs']:
+            st.subheader("Detailed Trading Bot Log")
+            # Assuming render_colored_log is defined and handles show_debug
+            render_colored_log(LOG_DETAILED, show_debug=True)
+        else:
+            st.subheader("Trading Bot Log")
+            render_colored_log(LOG_INFO, show_debug=False)
 
 elif tab == "Manage Bot":
     st.header("🤖 Bot Control")
