@@ -369,6 +369,10 @@ def send_order(
         alert_sound()
         return fake(-9, "init failed")
 
+    # Option symbol handling
+#    if opt and strike is not None:
+#        symbol = build_option_symbol(symbol, strike, opt)
+
     info = mt5.symbol_info(symbol)
     if not info or info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
         logging.error(f"[MT5] cannot trade {symbol}")

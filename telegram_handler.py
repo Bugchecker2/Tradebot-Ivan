@@ -1,4 +1,5 @@
 import re, json, logging, pathlib, winsound, asyncio
+import hashlib
 import MetaTrader5 as mt5
 from telethon import TelegramClient, events
 from mt5_executor import modify_by_symbol, send_order, close_pos, modify_position, resolve_symbol, load_broker_creds
@@ -73,11 +74,14 @@ async def the_handler(event):
     # 1) OPEN trade
     if m := trade_re.search(msg):
         verb = (m.group(1) or m.group(2)).lower()
-        action = 'buy' if verb in ('kaufe','buy') else 'sell'
         symbol_txt, opt, strike = m.group(3), m.group(4), m.group(5)
-        # Check if PUT/CALL and setting
-        if (opt or put_call_re.search(msg)) and not settings['accept_PUT_CALL']:
-            logging.info(f"[SIGNAL] Ignored OPEN {action.upper()} {symbol_txt} {opt or ''} strike={strike or '—'} because accept_PUT_CALL is False")
+        if opt: opt = m.group(4).lower()
+        action = 'buy' if verb in ('kaufe','buy') else 'sell'
+        # If buy at Put then this is sell !!  (however SL/TP settings don't fit -> better deactivate PUT_CALL) 
+        if (opt == 'put' and verb in ('kaufe', 'buy')): action = 'sell'
+        # Check if PUT/CALL and setting / Ignore Put/Call at sell
+        if (opt or put_call_re.search(msg)) and (not settings['accept_PUT_CALL'] or (settings['accept_PUT_CALL'] and verb in ('verkaufe','sell'))):
+            logging.info(f"[SIGNAL] Ignored OPEN {action.upper()} {symbol_txt} {opt or ''} strike={strike or '—'} because accept_PUT_CALL is False or it's a sell")
             return
         # Resolve symbol
         try:
@@ -212,30 +216,40 @@ async def update_listener_chats():
     # Add the event handler for valid chats
     client.add_event_handler(the_handler, events.NewMessage(chats=valid_chats))
 
-async def monitor_config():
-    while True:
-        await asyncio.sleep(10)  # Check every 10 seconds for config changes
-        await update_listener_chats()
+def config_hash(paths):
+    m = hashlib.md5()
+    for p in paths:
+        with open(p, 'rb') as f:
+            m.update(f.read())
+    return m.hexdigest()
 
+async def monitor_config():
+    last = config_hash([CRED_PATH, SETTINGS_PATH])
+    while True:
+        await asyncio.sleep(10)
+        now = config_hash([CRED_PATH, SETTINGS_PATH])
+        if now != last:
+            logging.info("Config changed -> updating")
+            await update_listener_chats()
+            last = now
+            
 async def run_listener():
     monitor_task = None
-    try:
-        # Start client first
-        await client.start()
-        me = await client.get_me()
-        logging.info(f"[TG] Logged in as {me.username} (id={me.id})")
-        
-        # Initial setup
-        await update_listener_chats()
-        
-        # Start monitor task for dynamic updates
-        monitor_task = asyncio.create_task(monitor_config())
-        
-        # Run until disconnected
-        await client.run_until_disconnected()
-    except Exception as e:
-        logging.exception("[TG] Unexpected connection error")
-    finally:
-        await client.disconnect()
-        if monitor_task:
-            monitor_task.cancel()
+    while True:
+        try:
+            await client.start()
+            me = await client.get_me()
+            logging.info(f"[TG] Logged in as {me.username} (id={me.id})")
+            await update_listener_chats()
+            monitor_task = asyncio.create_task(monitor_config())
+            await client.run_until_disconnected()
+        except ConnectionError as e:
+            logging.error(f"Connection failed: {e}. Retrying in 30s...")
+            await asyncio.sleep(30)
+        except Exception as e:
+            logging.exception("[TG] Unexpected error")
+            break
+        finally:
+            if monitor_task:
+                monitor_task.cancel()
+            await client.disconnect()
