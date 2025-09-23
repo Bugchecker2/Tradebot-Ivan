@@ -435,6 +435,10 @@ elif tab == "Monitor":
         positions = mt5.positions_get() or []
         rows = []
         libertex_rows = []  # New: For Libertex-style table
+
+        total_volume = sum(p.volume for p in positions) if positions else 0.0
+        total_used_margin = info.margin
+
         for p in positions:
             sym_info = mt5.symbol_info(p.symbol)
             contract_size = sym_info.trade_contract_size if sym_info else 1
@@ -450,9 +454,11 @@ elif tab == "Monitor":
                 leverage = get_leverage(p.symbol)
                 margin_used = (contract_size * p.price_open * lots) / leverage
 
-            # New: Calculate profit % based on margin (matches Libertex)
             profit_pct = (p.profit / margin_used * 100) if margin_used else 0
-            margin_mt5 = mt5.order_calc_margin(p.type, p.symbol, p.volume, p.price_open)
+            tick = mt5.symbol_info_tick(p.symbol)
+            current_price = (tick.bid + tick.ask) / 2 if tick else p.price_open
+            margin_mt5 = mt5.order_calc_margin(p.type, p.symbol, p.volume, current_price)
+            prorated_margin = (lots / total_volume * total_used_margin) if total_volume > 0 else margin_mt5
 
             rows.append({
                 "Ticket":     p.ticket,
@@ -465,8 +471,8 @@ elif tab == "Monitor":
                 "Units":       f"{units:.2f}" if units < 10 else f"{units:.0f}",
                 "Open Price": f"{convert(p.price_open, 'USD'):.2f}",
                 "Market Value": f"{convert(units * p.price_open, 'USD'):.2f}",
-                "Margin":       f"{convert(margin_used, margin_orig_cur):.2f}",
-                "Margin by mt5": f"{convert(margin_mt5, account_currency):.2f}",
+#                "Margin":       f"{convert(margin_used, margin_orig_cur):.2f}",
+                "Margin by mt5": f"{convert(prorated_margin, account_currency):.2f}",
 #                "Opened At":    opened_dt.strftime("%Y-%m-%d %H:%M:%S"),
                 "Profit":     f"{convert(p.profit, account_currency):.2f}"  
             })
@@ -479,8 +485,8 @@ elif tab == "Monitor":
             profit_pct = (adjusted_profit / actual_margin * 100) if actual_margin else 0
             tick = mt5.symbol_info_tick(p.symbol)
             price_close = tick.ask if operation == "BUY" else tick.bid
-            profit_close = (price_close - p.price_open) * units + commission_est
-
+            profit_close = (price_close - p.price_open) * units + commission_est if operation == "BUY" else (p.price_open - price_close) * units + commission_est
+            
             libertex_rows.append({
                 "Symbol":     p.symbol,
                 "Date ": opened_dt.strftime("%d %B %Y, %H:%M:%S"), 
@@ -497,7 +503,7 @@ elif tab == "Monitor":
             st.write("No open positions.")
         else:
             df = df[
-                ["Ticket","Path", "Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin","Margin by mt5","Profit"]
+                ["Ticket","Path", "Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin by mt5","Profit"]
             ]
             st.table(df)
 
