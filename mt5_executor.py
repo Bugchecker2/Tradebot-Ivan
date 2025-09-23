@@ -34,11 +34,11 @@ def alert_sound():
     p = BASE_DIR / "audio" / "error.wav"
     winsound.PlaySound(str(p), winsound.SND_FILENAME | winsound.SND_ASYNC)
 
-
 # — Beep on success —
 def success_sound():
     p = BASE_DIR / "audio" / "success.wav"
     winsound.PlaySound(str(p), winsound.SND_FILENAME | winsound.SND_ASYNC)
+
 # — Pick up active broker creds —
 def load_broker_creds() -> tuple[str, dict]:
     data = json.load(open(CONFIG_PATH, encoding="utf-8"))
@@ -47,6 +47,7 @@ def load_broker_creds() -> tuple[str, dict]:
         alert_sound()
         raise KeyError("Active broker not set or not found in mt5_credentials.json")
     return active, data[active]
+
 # — Initialize / login MT5 once per run —
 def connect() -> bool:
     global INITIAL_BALANCE, _INITIALIZED
@@ -98,7 +99,7 @@ def connect() -> bool:
     return True
 
 # — Symbol resolution helper —
-ALIAS_TO_SYMBOL = {alias.upper(): symbol for symbol, aliases in GROUPED_ALIASES.items()for alias in aliases + [symbol]}
+ALIAS_TO_SYMBOL = {alias.upper(): symbol for symbol, aliases in GROUPED_ALIASES.items() for alias in aliases + [symbol]}
 
 def resolve_symbol(sym: str) -> str:
     raw = sym.strip().upper()
@@ -143,23 +144,18 @@ def build_option_symbol(base: str, strike: float, opt: str) -> str:
     side = "C" if opt.lower().startswith("c") else "P"
     return f"{base.upper()}-{int(strike)}-{side}"
 
-import math
-import MetaTrader5 as mt5
-from mt5_executor import alert_sound, INITIAL_BALANCE
-
-
-def switch_broker(new_broker:str):
+def switch_broker(new_broker: str):
     try:
         data = json.load(open(CONFIG_PATH, encoding="utf-8"))
     except Exception as e:
-        logging.error()
+        logging.error(f"[MT5] Failed to load config: {e}")
         alert_sound()
         return False
     if new_broker not in data:
         logging.error(f"[MT5] Broker '{new_broker}' not found in config")
         alert_sound()
         return False
-    data["active"]=new_broker
+    data["active"] = new_broker
     try:
         with open(CONFIG_PATH, 'w', encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -178,19 +174,15 @@ def search_leverage_in_map(name: str) -> float:
     active_broker = data.get("active")
     if not active_broker:
         logging.error("[Get leverage] No active broker")
-        return 10.0
     active_config = data.get(active_broker)
     if not active_config:
         logging.error("[Get leverage] No active config")
-        return 10.0
     name_file = active_config.get("leverage_json_file")
     if not name_file:
         logging.error("[Get leverage] No name file")
-        return 10.0
     LEVERAGE_MAP_PATH = BASE_DIR / "leverage_maps" / name_file
     if not LEVERAGE_MAP_PATH.exists():
-        logging.warning("[Get leverage] Fallback LEVERAGE_MAP_PATH not exist")
-        return 10.0
+        logging.error("[Get leverage] Fallback LEVERAGE_MAP_PATH not exist")
     
     with open(LEVERAGE_MAP_PATH, 'r', encoding="utf-8") as f:
         leverage_data = json.load(f)
@@ -204,7 +196,7 @@ def search_leverage_in_map(name: str) -> float:
                 instr = item.get("Instrument", "").upper()
                 if instr == sym:
                     return float(item["Leverage"])
-    return 10.0
+    return None
 
 def get_leverage(symbol: str) -> float:
     sym = symbol.upper()
@@ -226,71 +218,73 @@ def get_leverage(symbol: str) -> float:
     else:
         path = str(value) if value is not None else ""
     path_norm = path.lower().strip()
-    
-    # Fallback based on broker type
-    if "metaquotes" in broker_name:
-        return 1.0
-    standart_rules = [
-        (["fx majors"], 30.0),
-        (["fx crosses", "fx exotics"], 20.0),
-        (["xaueur","xauusd"], 20.0), 
-        (["spot metals"], 10.0), 
-        (["indices"], 20.0), 
-        (["crypto"], 2.0),
-        (["stocks"], 5.0),  # Include stocks in rules for consistency
-    ]
-    demo_rules = [
-        (["fx majors"], 500.0),
-        (["fx crosses"], 200.0),
-        (["fx exotics"], 200.0),
-        (["xaueur","xauusd"], 200.0), 
-        (["spot metals"], 100.0), 
-        (["metals"], 50.0),
-        (["energy"], 10.0),
-        (["indices"], 200.0), 
-        (["crypto"], 20.0),
-        (["stocks"], 5.0),  # Include stocks in rules for consistency
-    ]
-    pro_rules = [
-        (["fx majors"], 999.0),
-        (["fx crosses"], 500.0),
-        (["fx exotics"], 50.0),
-        (["xaueur","xauusd"], 300.0), 
-        (["spot metals"], 200.0), 
-        (["metals"], 20.0),
-        (["indices"], 200.0), 
-        (["crypto"], 30.0),
-        (["stocks"], 5.0),  # Include stocks in rules for consistency
-    ]
-    rules = standart_rules
-    segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
-    if "pro" in broker_name:
-        rules = pro_rules
-    if "demo" in broker_name:
-        rules = demo_rules
-    if "stock" in path_norm:  
-        return 5.0
-    for keywords, lev_val in rules:
-        for kw in keywords:
-            for seg in segments:
-                if (
-                    seg == kw
-                    or seg.startswith(kw + " ")
-                    or seg.startswith(kw)
-                    or seg.endswith(" " + kw)
-                    or seg.endswith(kw)
-                ):
-                    return lev_val
+
     lev = search_leverage_in_map(sym)
-    if lev != 10.0:
+    if lev:
         return lev
+    else:
+        # Fallback based on broker type
+        logging.warning("[Leverage Fallback at rules]")
+        if "metaquotes" in broker_name:
+            return 1.0
+        standart_rules = [
+            (["fx majors"], 30.0),
+            (["fx crosses", "fx exotics"], 20.0),
+            (["xaueur","xauusd"], 20.0), 
+            (["spot metals"], 10.0), 
+            (["indices"], 20.0), 
+            (["crypto"], 2.0),
+            (["stocks"], 5.0),  # Include stocks in rules for consistency
+        ]
+        demo_rules = [
+            (["fx majors"], 500.0),
+            (["fx crosses"], 200.0),
+            (["fx exotics"], 200.0),
+            (["xaueur","xauusd"], 200.0), 
+            (["spot metals"], 100.0), 
+            (["metals"], 50.0),
+            (["energy"], 10.0),
+            (["indices"], 200.0), 
+            (["crypto"], 20.0),
+            (["stocks"], 20.0),  # Include stocks in rules for consistency
+        ]
+        pro_rules = [
+            (["fx majors"], 999.0),
+            (["fx crosses"], 500.0),
+            (["fx exotics"], 50.0),
+            (["xaueur","xauusd"], 300.0), 
+            (["spot metals"], 200.0), 
+            (["metals"], 20.0),
+            (["indices"], 200.0), 
+            (["crypto"], 30.0),
+            (["stocks"], 5.0),  # Include stocks in rules for consistency
+        ]
+        rules = standart_rules
+        segments = [s.strip() for s in re.split(r'[\\/,\;\|\-]+', path_norm) if s.strip()]
+        if "pro" in broker_name:
+            rules = pro_rules
+        if "demo" in broker_name:
+            rules = demo_rules
+        if "stock" in path_norm:  
+            return 5.0
+        for keywords, lev_val in rules:
+            for kw in keywords:
+                for seg in segments:
+                    if (
+                        seg == kw
+                        or seg.startswith(kw + " ")
+                        or seg.startswith(kw)
+                        or seg.endswith(" " + kw)
+                        or seg.endswith(kw)
+                    ):
+                        logging.info(f"[Get leverage] Rule-based leverage for {sym}: {lev_val}")
+                        return lev_val
     return 10.0
 
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
              start_capital: float, free_margin: float) -> float:
     """
     LOT = (AvailableMoney * lot_percent * leverage) / (price * contract_size)
-    Margin
     Margin provided function order_calc_margin
     AvailableMoney:
       • if reinvest=False & lot_method=='percent_remaining': 
@@ -307,20 +301,26 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
         return settings.get("default_lot", 0.01)
 
     # 1) Determine available money
-    # Force using free_margin as available money to base on 20% of free margin
-    avail = free_margin
-    logging.info(f"[Margin Calculation] avail. money = {avail}; free_margin = {free_margin}; balance = {balance}; start_capital = {start_capital}")
+    reinvest = settings.get("reinvest", False)
+    lot_method = settings.get("lot_method", "percent_start")
+    acct_info = mt5.account_info()
+    used_margin = acct_info.margin if acct_info else 0.0
+    if not reinvest:
+        if lot_method == 'percent_remaining':
+            avail = max(start_capital - used_margin, 0.0)
+        else:  # 'percent_start' or default
+            avail = start_capital
+    else:
+        if lot_method == 'percent_remaining':
+            avail = free_margin
+        else:  # 'percent_start' or default
+            avail = balance
+    logging.detailed(f"[Margin Calculation] avail. money = {avail}; free_margin = {free_margin}; balance = {balance}; start_capital = {start_capital}")
 
     pct = settings["lot_percent"] / 100.0
     cap_pct = settings.get("max_cap_percent", 20) / 100.0
-    # Remove cap to purely use pct of avail (free_margin)
-    risk_amt = avail * pct
-    # risk_amt = min(avail * pct, start_capital * cap_pct)  # Original, commented out
-    logging.detailed(f"[Risk Calculation] pct = {pct}; cap_pct = {cap_pct}; initial risk_amt = {risk_amt}")
-
-    # Limit risk_amt to free_margin to avoid overcommitment
-    risk_amt = min(risk_amt, free_margin)
-    logging.detailed(f"[Risk Adjustment] adjusted risk_amt = {risk_amt} (limited by free_margin)")
+    risk_amt = min(avail * pct, start_capital * cap_pct)  # Cap to max_cap_percent of start_capital
+    logging.detailed(f"[Risk Calculation] pct = {pct}; cap_pct = {cap_pct}; risk_amt = {risk_amt}")
 
     # 3) Leverage & contract size
     leverage = get_leverage(symbol)
@@ -333,23 +333,24 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
 
     # 5) Snap to broker’s steps
     step, vmin, vmax = info.volume_step, info.volume_min, info.volume_max
-    floored = math.floor(raw_lot / step) * step
-    qty = max(vmin, min(floored, vmax)) if floored >= vmin else 0.0
-    logging.detailed(f"[Lot Snapping] step = {step}; vmin = {vmin}; vmax = {vmax}; floored = {floored}; final qty = {qty}")
 
-    # 6) Verify with actual margin calculation
-    # Assume type=0 for buy, adjust if needed
-    expected_margin = mt5.order_calc_margin(0, symbol, qty, price)
-    if expected_margin is not None and expected_margin > free_margin:
-        logging.warning(f"[Margin Check] Expected margin {expected_margin} > free_margin {free_margin}, reducing lot")
-        # Reduce by steps until it fits
-        while qty > vmin and expected_margin > free_margin:
-            qty -= step
-            qty = round(qty, 8)  # To avoid floating point issues
-            expected_margin = mt5.order_calc_margin(0, symbol, qty, price)
-        if expected_margin > free_margin or qty < vmin:
+    # Cap to vmax before flooring to ensure we don't exceed limit
+    effective_lot = min(raw_lot, vmax)
+    if raw_lot > vmax:
+        effective_lot -= 1e-8  # Take slightly less than the limit if exceeding
+        logging.warning(f"Max Lot volume {vmax} reached. Calul. Lot {raw_lot} reduced to {effective_lot}")
+    floored = math.floor(effective_lot / step) * step
+    qty = max(vmin, floored) if floored >= vmin else 0.0
+    logging.detailed(f"[Lot Snapping] step = {step}; vmin = {vmin}; vmax = {vmax}; effective_lot = {effective_lot}; floored = {floored}; snapped qty = {qty}")
+
+    # 6) Verify with actual margin calculation - all or nothing
+    if qty > 0:
+        expected_margin = mt5.order_calc_margin(0, symbol, qty, price)
+        if expected_margin is None or expected_margin > free_margin:
+            logging.warning(f"[Margin Check] Expected margin {expected_margin} > free_margin {free_margin}, rejecting trade")
             qty = 0.0
-        logging.info(f"[Margin Adjustment] Adjusted qty = {qty}; expected_margin = {expected_margin}")
+        else:
+            logging.detailed(f"[Margin Check] Expected margin {expected_margin} <= free_margin {free_margin}, proceeding")
 
     return round(qty, 8)
 
@@ -368,10 +369,6 @@ def send_order(
     if not connect():
         alert_sound()
         return fake(-9, "init failed")
-
-    # Option symbol handling
-#    if opt and strike is not None:
-#        symbol = build_option_symbol(symbol, strike, opt)
 
     info = mt5.symbol_info(symbol)
     if not info or info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
@@ -397,6 +394,11 @@ def send_order(
     lot = calc_lot(symbol, settings, balance, price, start_cap, free_margin)
     logging.info(f"[MT5] lot={lot:.4f} for {symbol}@{price:.4f}")
 
+    if lot <= 0:
+        logging.error(f"[MT5] Insufficient free margin for full lot size on {symbol}")
+        alert_sound()
+        return fake(-10, "insufficient margin")
+
     # Build & send
     req = {
         "action":     mt5.TRADE_ACTION_DEAL,
@@ -416,7 +418,7 @@ def send_order(
 
     for fm in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
         req["type_filling"] = fm
-        logging.info(f"[MT5] trying fill_mode={fm}")
+        logging.detailed(f"[MT5] trying fill_mode={fm}")
         res = mt5.order_send(req)
         if not res:
             logging.error("[MT5] send returned None")
@@ -504,6 +506,7 @@ def modify_position(ticket: int, sl: float = None, tp: float = None) -> object:
         return fake(-5, "none")
     success_sound()
     return res
+
 # — Modify existing position by symbol (new function for setting SL/TP on trades by symbol) —
 def modify_by_symbol(symbol: str, sl: float = 0.0, tp: float = 0.0) -> object:
     if not connect():
@@ -574,7 +577,7 @@ def close_pos_by_ticket(ticket: int) -> object:
     }
     for fm in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
         req["type_filling"] = fm
-        logging.info(f"[MT5] trying fill_mode={fm}")
+        logging.detailed(f"[MT5] trying fill_mode={fm}")
         res = mt5.order_send(req)
         if not res:
             logging.error("[MT5] send returned None")
