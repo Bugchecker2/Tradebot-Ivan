@@ -188,27 +188,37 @@ def search_leverage_in_map(name: str) -> float:
         leverage_data = json.load(f)
     sym = name.upper()
     for category in leverage_data:
-        if category == "platform" or category == "Stocks":  #SKIP
+        if category == "platform":  
             continue
         items = leverage_data[category]
         if isinstance(items, list):
             for item in items:
                 instr = item.get("Instrument", "").upper()
                 if instr == sym:
+                    logging.detailed(f"[Get leverage] Found leverage {float(item['Leverage'])} for {sym} in {category}")
                     return float(item["Leverage"])
+    logging.warning(f"[Get leverage] No leverage found for {sym} in map, returning None")
     return None
 
 def get_leverage(symbol: str) -> float:
     sym = symbol.upper()
-    info = mt5.symbol_info(sym)
+    logging.detailed(f"[Get leverage] Attempting to resolve symbol: {sym}")
+    try:
+        resolved_sym = resolve_symbol(sym)
+        info = mt5.symbol_info(resolved_sym)
+    except ValueError as e:
+        logging.error(f"[Get leverage] Failed to resolve symbol {sym}: {e}")
+        return 10.0
+    
     if not info:
+        logging.error(f"[Get leverage] No symbol info for {resolved_sym} after resolution, returning default 10.0")
         return 10.0
     
     with open(CONFIG_PATH, 'r', encoding="utf-8") as f:
         data = json.load(f)
     active = data.get("active")
     if not active:
-        return 10.0  
+        logging.error(f"[Get leverage] No active broker, returning default 10.0")
 
     broker_name = active.lower()
 
@@ -219,13 +229,17 @@ def get_leverage(symbol: str) -> float:
         path = str(value) if value is not None else ""
     path_norm = path.lower().strip()
 
-    lev = search_leverage_in_map(sym)
+    lev = search_leverage_in_map(resolved_sym)
     if lev:
+        logging.detailed(f"[Get leverage] Leverage from map for {resolved_sym}: {lev}")
         return lev
+    if "stock" in path_norm:
+        return 5.0
     else:
-        # Fallback based on broker type
+        # Fallback rules
         logging.warning("[Leverage Fallback at rules]")
         if "metaquotes" in broker_name:
+            logging.detailed(f"[Get leverage] Metaquotes detected, returning 1.0 for {resolved_sym}")
             return 1.0
         standart_rules = [
             (["fx majors"], 30.0),
@@ -246,7 +260,7 @@ def get_leverage(symbol: str) -> float:
             (["energy"], 10.0),
             (["indices"], 200.0), 
             (["crypto"], 20.0),
-            (["stocks"], 20.0),  # Include stocks in rules for consistency
+            (["stocks"], 5.0),  # Include stocks in rules for consistency
         ]
         pro_rules = [
             (["fx majors"], 999.0),
@@ -265,8 +279,6 @@ def get_leverage(symbol: str) -> float:
             rules = pro_rules
         if "demo" in broker_name:
             rules = demo_rules
-        if "stock" in path_norm:  
-            return 5.0
         for keywords, lev_val in rules:
             for kw in keywords:
                 for seg in segments:
@@ -277,8 +289,9 @@ def get_leverage(symbol: str) -> float:
                         or seg.endswith(" " + kw)
                         or seg.endswith(kw)
                     ):
-                        logging.info(f"[Get leverage] Rule-based leverage for {sym}: {lev_val}")
+                        logging.detailed(f"[Get leverage] Rule-based leverage for {resolved_sym}: {lev_val}")
                         return lev_val
+    logging.warning(f"[Get leverage] No matching rules, returning default 10.0 for {resolved_sym}")
     return 10.0
 
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
@@ -329,7 +342,7 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
 
     # 4) Raw lot formula
     raw_lot = (risk_amt * leverage) / (price * contract_size) if (price * contract_size) > 0 else 0
-    logging.detailed(f"[Lot Calculation] raw_lot = {raw_lot}")
+    logging.info(f"[Lot Calculation] raw_lot = {raw_lot}")
 
     # 5) Snap to broker’s steps
     step, vmin, vmax = info.volume_step, info.volume_min, info.volume_max
@@ -338,7 +351,6 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
     effective_lot = min(raw_lot, vmax)
     if raw_lot > vmax:
         effective_lot -= 1e-8  # Take slightly less than the limit if exceeding
-        logging.warning(f"Max Lot volume {vmax} reached. Calul. Lot {raw_lot} reduced to {effective_lot}")
     floored = math.floor(effective_lot / step) * step
     qty = max(vmin, floored) if floored >= vmin else 0.0
     logging.detailed(f"[Lot Snapping] step = {step}; vmin = {vmin}; vmax = {vmax}; effective_lot = {effective_lot}; floored = {floored}; snapped qty = {qty}")
@@ -369,6 +381,10 @@ def send_order(
     if not connect():
         alert_sound()
         return fake(-9, "init failed")
+
+    # Option symbol handling
+#    if opt and strike is not None:
+#        symbol = build_option_symbol(symbol, strike, opt)
 
     info = mt5.symbol_info(symbol)
     if not info or info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
@@ -418,7 +434,7 @@ def send_order(
 
     for fm in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
         req["type_filling"] = fm
-        logging.detailed(f"[MT5] trying fill_mode={fm}")
+        logging.info(f"[MT5] trying fill_mode={fm}")
         res = mt5.order_send(req)
         if not res:
             logging.error("[MT5] send returned None")

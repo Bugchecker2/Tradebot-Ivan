@@ -2,16 +2,21 @@ import re, json, logging, pathlib, winsound, asyncio
 import hashlib
 import MetaTrader5 as mt5
 from telethon import TelegramClient, events
+import traceback 
 from mt5_executor import modify_by_symbol, send_order, close_pos, modify_position, resolve_symbol, load_broker_creds
 
 BASE_DIR      = pathlib.Path(__file__).parent
 SETTINGS_PATH = BASE_DIR / "config" / "settings.json"
 CRED_PATH     = BASE_DIR / "config" / "credentials.json"  
-logging.getLogger("telethon").setLevel(logging.WARNING)
+logging.getLogger("telethon").setLevel(logging.INFO)  
 
 # Load Telegram credentials (for client init)
 creds = json.load(open(CRED_PATH))
-client = TelegramClient('session', creds['api_id'], creds['api_hash'])
+client = TelegramClient('session', creds['api_id'], creds['api_hash'],
+                        connection_retries=20,  
+                        request_retries=20,     
+                        retry_delay=2,          
+                        timeout=30)             
 
 # Play a beep on errors
 def alert_sound():
@@ -235,7 +240,11 @@ async def monitor_config():
             
 async def run_listener():
     monitor_task = None
+    retry_count = 0  
+    first_attempt = True
     while True:
+        if not first_attempt:
+            logging.info(f"[TG] Attempting to reconnect (attempt {retry_count})...")
         try:
             await client.start()
             me = await client.get_me()
@@ -243,13 +252,21 @@ async def run_listener():
             await update_listener_chats()
             monitor_task = asyncio.create_task(monitor_config())
             await client.run_until_disconnected()
+            logging.info("[TG] Disconnected normally, will attempt to reconnect.")
         except ConnectionError as e:
-            logging.error(f"Connection failed: {e}. Retrying in 30s...")
+            retry_count += 1
+            logging.warning("[TG] Possible internet loss detected.")
+            logging.error(f"Connection failed (retry {retry_count}): {e}. Full traceback: {traceback.format_exc()}. Retrying in 30s...")
             await asyncio.sleep(30)
         except Exception as e:
-            logging.exception("[TG] Unexpected error")
+            logging.exception(f"[TG] Unexpected error: {e}. Full traceback: {traceback.format_exc()}")
             break
         finally:
             if monitor_task:
+                try:
+                    await monitor_task  
+                except Exception as e:
+                    logging.error(f"Monitor config task failed: {e}. Traceback: {traceback.format_exc()}")
                 monitor_task.cancel()
             await client.disconnect()
+        first_attempt = False
