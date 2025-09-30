@@ -212,6 +212,7 @@
 { "Instrument": "NCLH", "Leverage": 20 },
 { "Instrument": "Nike", "Leverage": 20 },
 { "Instrument": "Nintendo_US", "Leverage": 20 },
+{ "Instrument": "nVidia", "Leverage": 5 },
 { "Instrument": "Oracle", "Leverage": 20 },
 { "Instrument": "Petrobras", "Leverage": 20 },
 { "Instrument": "Pfizer", "Leverage": 20 },
