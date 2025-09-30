@@ -439,6 +439,9 @@ elif tab == "Monitor":
         total_volume = sum(p.volume for p in positions) if positions else 0.0
         total_used_margin = info.margin
 
+        if 'leverage_cache' not in st.session_state:
+            st.session_state['leverage_cache'] = {}
+
         for p in positions:
             sym_info = mt5.symbol_info(p.symbol)
             contract_size = sym_info.trade_contract_size if sym_info else 1
@@ -451,7 +454,12 @@ elif tab == "Monitor":
             if margin_req > 0:
                 margin_used = margin_req * lots
             else:
-                leverage = get_leverage(p.symbol)
+                psym = p.symbol
+                if psym not in st.session_state['leverage_cache']:
+                    leverage = get_leverage(psym)
+                    st.session_state['leverage_cache'][psym] = leverage
+                else:
+                    leverage = st.session_state['leverage_cache'][psym]
                 margin_used = (contract_size * p.price_open * lots) / leverage
 
             profit_pct = (p.profit / margin_used * 100) if margin_used else 0
@@ -462,7 +470,7 @@ elif tab == "Monitor":
 
             rows.append({
                 "Ticket":     p.ticket,
-                "Path": sym_info.path,
+                "Path":       sym_info.path[:25],
                 "Symbol":     p.symbol,
                 "Leverage":   f"{leverage:.0f}" or " - ",
                 "Volum" :     f"{p.volume:.2f}",
@@ -515,6 +523,11 @@ elif tab == "Monitor":
 
 if tab == "View Logs":
     st.header("📝 View Logs")
+    
+    # ─── Auto‑refresh on new log lines ───
+    # rerun the script every 1 s so we pick up any appended lines immediately    
+    st_autorefresh(interval=1_000, key="logs_autorefresh")
+    
     # ─── Controls ───
     col1, col2 = st.columns([1,3])
     with col1:
