@@ -8,7 +8,7 @@ from mt5_executor import modify_by_symbol, send_order, close_pos, modify_positio
 BASE_DIR      = pathlib.Path(__file__).parent
 SETTINGS_PATH = BASE_DIR / "config" / "settings.json"
 CRED_PATH     = BASE_DIR / "config" / "credentials.json"  
-logging.getLogger("telethon").setLevel(logging.INFO)  
+logging.getLogger("telethon").setLevel(logging.WARNING)
 
 # Load Telegram credentials (for client init)
 creds = json.load(open(CRED_PATH))

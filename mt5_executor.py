@@ -8,10 +8,12 @@ import re
 import MetaTrader5 as mt5
 import winsound
 from utils.symbols_alias import GROUPED_ALIASES
+from datetime import datetime, date
 
 # — Global state —
 INITIAL_BALANCE: float = None
 _INITIALIZED: bool = False
+LAST_UPDATE_DATE: date = None
 
 # — Paths —
 BASE_DIR      = pathlib.Path(__file__).parent
@@ -94,6 +96,9 @@ def connect() -> bool:
     # 6) Cache starting balance
     INITIAL_BALANCE = mt5.account_info().balance
     logging.info(f"[MT5] Base capital set to {INITIAL_BALANCE:.2f}")
+
+    global LAST_UPDATE_DATE
+    LAST_UPDATE_DATE = datetime.now().date()
 
     _INITIALIZED = True
     return True
@@ -237,7 +242,7 @@ def get_leverage(symbol: str) -> float:
         return 5.0
     else:
         # Fallback rules
-        logging.warning("[Leverage Fallback at rules]")
+        logging.info("[Leverage Fallback at rules]")
         if "metaquotes" in broker_name:
             logging.detailed(f"[Get leverage] Metaquotes detected, returning 1.0 for {resolved_sym}")
             return 1.0
@@ -291,7 +296,7 @@ def get_leverage(symbol: str) -> float:
                     ):
                         logging.detailed(f"[Get leverage] Rule-based leverage for {resolved_sym}: {lev_val}")
                         return lev_val
-    logging.warning(f"[Get leverage] No matching rules, returning default 10.0 for {resolved_sym}")
+    logging.info(f"[Get leverage] No matching rules, returning default 10.0 for {resolved_sym}")
     return 10.0
 
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
@@ -309,6 +314,15 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
       • if reinvest=True  & lot_method=='percent_start': 
             current balance
     """
+    global INITIAL_BALANCE, LAST_UPDATE_DATE
+    current_date = datetime.now().date()
+    if LAST_UPDATE_DATE is None or current_date != LAST_UPDATE_DATE:
+        if not connect():  # Ensure MT5 is connected before querying balance
+            return 0.0
+        INITIAL_BALANCE = mt5.account_info().balance
+        LAST_UPDATE_DATE = current_date
+        logging.info(f"[MT5] Updated INITIAL_BALANCE to {INITIAL_BALANCE:.2f} for new day {current_date}")
+
     info = mt5.symbol_info(symbol)
     if not info or info.trade_contract_size <= 0 or price <= 0:
         return settings.get("default_lot", 0.01)
@@ -381,10 +395,6 @@ def send_order(
     if not connect():
         alert_sound()
         return fake(-9, "init failed")
-
-    # Option symbol handling
-#    if opt and strike is not None:
-#        symbol = build_option_symbol(symbol, strike, opt)
 
     info = mt5.symbol_info(symbol)
     if not info or info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
