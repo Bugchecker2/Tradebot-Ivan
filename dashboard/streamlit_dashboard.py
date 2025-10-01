@@ -431,6 +431,19 @@ elif tab == "Monitor":
         col1.metric("Balance",     f"{convert(info.balance, account_currency):.2f} {symbol}")
         col2.metric("Used Margin", f"{convert(info.margin, account_currency):.2f} {symbol}")
         col3.metric("Free Margin", f"{convert(info.margin_free, account_currency):.2f} {symbol}")
+        try:
+            with open("config/mt5_credentials.json", 'r', encoding="utf-8") as f:  # Assuming CONFIG_PATH = "config/mt5_credentials.json"
+                data = json.load(f)
+            active = data.get("active")
+        except Exception:
+            active = None
+            logging.error("Failed to read active broker from mt5_credentials.json")
+
+        if 'leverage_cache' not in st.session_state:
+            st.session_state['leverage_cache'] = {}
+        if 'last_broker' not in st.session_state or st.session_state['last_broker'] != active:
+            st.session_state['leverage_cache'] = {}
+            st.session_state['last_broker'] = active
 
         positions = mt5.positions_get() or []
         rows = []
@@ -438,9 +451,6 @@ elif tab == "Monitor":
 
         total_volume = sum(p.volume for p in positions) if positions else 0.0
         total_used_margin = info.margin
-
-        if 'leverage_cache' not in st.session_state:
-            st.session_state['leverage_cache'] = {}
 
         for p in positions:
             sym_info = mt5.symbol_info(p.symbol)
