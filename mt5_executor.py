@@ -242,7 +242,7 @@ def get_leverage(symbol: str) -> float:
         return 5.0
     else:
         # Fallback rules
-        logging.info("[Leverage Fallback at rules]")
+        logging.warning("[Leverage Fallback at rules]")
         if "metaquotes" in broker_name:
             logging.detailed(f"[Get leverage] Metaquotes detected, returning 1.0 for {resolved_sym}")
             return 1.0
@@ -395,6 +395,10 @@ def send_order(
     if not connect():
         alert_sound()
         return fake(-9, "init failed")
+
+    # Option symbol handling
+#    if opt and strike is not None:
+#        symbol = build_option_symbol(symbol, strike, opt)
 
     info = mt5.symbol_info(symbol)
     if not info or info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
