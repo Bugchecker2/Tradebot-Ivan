@@ -357,6 +357,8 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
     # 4) Raw lot formula
     raw_lot = (risk_amt * leverage) / (price * contract_size) if (price * contract_size) > 0 else 0
     logging.info(f"[Lot Calculation] raw_lot = {raw_lot}")
+    mt5_margin = mt5.order_calc_margin(0, symbol, raw_lot, price)
+    logging.info(f"[Margin MT5] margin = {mt5_margin} for raw_lot = {raw_lot}")
 
     # 5) Snap to broker’s steps
     step, vmin, vmax = info.volume_step, info.volume_min, info.volume_max
@@ -436,15 +438,18 @@ def send_order(
         "volume":     lot,
         "type":       mt5.ORDER_TYPE_BUY if action.lower()=="buy" else mt5.ORDER_TYPE_SELL,
         "price":      price,
-        "sl":         sl,
-        "tp":         tp,
         "deviation":  20,
         "magic":      234000,
         "comment":    "TeleBot",
         "type_time":  mt5.ORDER_TIME_GTC
     }
     if comment_id:
-        req["comment_id"] = comment_id
+        req["comment_id"] = comment_id  # Note: This might be a typo; should be "comment" if it's for the order comment.
+
+    if sl != 0:
+        req["sl"] = sl
+    if tp != 0:
+        req["tp"] = tp
 
     for fm in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
         req["type_filling"] = fm
