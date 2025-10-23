@@ -299,6 +299,37 @@ def get_leverage(symbol: str) -> float:
     logging.info(f"[Get leverage] No matching rules, returning default 10.0 for {resolved_sym}")
     return 10.0
 
+def calc_margin_for_lot(aggregate_before: float, added_nominal: float) -> float:
+    """Calculate incremental margin for added nominal, based on tiers."""
+    #TODO: MAKE SURE THAT WILL BE NOT INFLUENCE ANOTHER FUNCTION
+    tiers = [
+        (50000, 200),
+        (500000, 100),
+        (1000000, 50),
+        (5000000, 20),
+        (10000000, 10),
+        (float('inf'), 1)
+    ]
+    
+
+    def calc_total_margin(total_nominal):
+        margin = 0.0
+        remaining = total_nominal
+        prev_limit = 0.0
+        for limit, lev in tiers:
+            tranche = min(remaining, limit - prev_limit)
+            if tranche > 0:
+                margin += tranche / lev
+                remaining -= tranche
+            prev_limit = limit
+            if remaining <= 0:
+                break
+        return margin
+    
+    margin_before = calc_total_margin(aggregate_before)
+    margin_after = calc_total_margin(aggregate_before + added_nominal)
+    return margin_after - margin_before
+   
 def calc_lot(symbol: str, settings: dict, balance: float, price: float, 
              start_capital: float, free_margin: float) -> float:
     """
@@ -349,16 +380,33 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
     risk_amt = min(avail * pct, start_capital * cap_pct)  # Cap to max_cap_percent of start_capital
     logging.detailed(f"[Risk Calculation] pct = {pct}; cap_pct = {cap_pct}; risk_amt = {risk_amt}")
 
-    # 3) Leverage & contract size
-    leverage = get_leverage(symbol)
-    contract_size = info.trade_contract_size
-    logging.detailed(f"[Instrument Info] leverage = {leverage}; contract_size = {contract_size}; price = {price}")
+    # Assume contract_size from info
+    contract_size = info.trade_contract_size  # 1.0
 
-    # 4) Raw lot formula
-    raw_lot = (risk_amt * leverage) / (price * contract_size) if (price * contract_size) > 0 else 0
+    # Get current aggregate nominal (sum of open positions' nominals for this symbol)
+    aggregate_before = 0.0
+    positions = mt5.positions_get(symbol=symbol)
+    if positions:
+        for pos in positions:
+            if pos.type in (mt5.ORDER_TYPE_BUY, mt5.ORDER_TYPE_SELL):  # Only open positions
+                aggregate_before += pos.volume * pos.price_open * contract_size
+    logging.detailed(f"[Aggregate Before] {aggregate_before} for symbol {symbol}")
+
+    # Iteratively find lot where incremental margin ≈ risk_amt (binary search)
+    low, high = 0.0, info.volume_max  # Use vmax as upper bound
+    precision = 1e-6
+    for _ in range(100):  # Max iterations to converge
+        mid = (low + high) / 2
+        added_nominal = mid * price * contract_size
+        inc_margin = calc_margin_for_lot(aggregate_before, added_nominal)
+        if inc_margin < risk_amt:
+            low = mid
+        else:
+            high = mid
+        if high - low < precision:
+            break
+    raw_lot = low
     logging.info(f"[Lot Calculation] raw_lot = {raw_lot}")
-    mt5_margin = mt5.order_calc_margin(0, symbol, raw_lot, price)
-    logging.info(f"[Margin MT5] margin = {mt5_margin} for raw_lot = {raw_lot}")
 
     # 5) Snap to broker’s steps
     step, vmin, vmax = info.volume_step, info.volume_min, info.volume_max
@@ -373,15 +421,15 @@ def calc_lot(symbol: str, settings: dict, balance: float, price: float,
 
     # 6) Verify with actual margin calculation - all or nothing
     if qty > 0:
-        expected_margin = mt5.order_calc_margin(0, symbol, qty, price)
-        if expected_margin is None or expected_margin > free_margin:
+        added_nominal = qty * price * contract_size
+        expected_margin = calc_margin_for_lot(aggregate_before, added_nominal)
+        if expected_margin > free_margin:
             logging.warning(f"[Margin Check] Expected margin {expected_margin} > free_margin {free_margin}, rejecting trade")
             qty = 0.0
         else:
             logging.detailed(f"[Margin Check] Expected margin {expected_margin} <= free_margin {free_margin}, proceeding")
 
     return round(qty, 8)
-
 # — Main trading function —
 def send_order(
     action: str,
@@ -430,6 +478,32 @@ def send_order(
         logging.error(f"[MT5] Insufficient free margin for full lot size on {symbol}")
         alert_sound()
         return fake(-10, "insufficient margin")
+
+    # Check SL/TP validity
+    is_buy = action.lower() == "buy"
+    point = info.point
+    stops_level = info.trade_stops_level
+    min_distance = stops_level * point
+
+    if sl != 0:
+        if is_buy:
+            if sl >= price - min_distance:
+                logging.warning(f"[MT5] Invalid SL for BUY: {sl} too close or above price {price} (min distance: {min_distance})")
+                sl = 0
+        else:  # SELL
+            if sl <= price + min_distance:
+                logging.warning(f"[MT5] Invalid SL for SELL: {sl} too close or below price {price} (min distance: {min_distance})")
+                sl = 0
+
+    if tp != 0:
+        if is_buy:
+            if tp <= price + min_distance:
+                logging.warning(f"[MT5] Invalid TP for BUY: {tp} too close or below price {price} (min distance: {min_distance})")
+                tp = 0
+        else:  # SELL
+            if tp >= price - min_distance:
+                logging.warning(f"[MT5] Invalid TP for SELL: {tp} too close or above price {price} (min distance: {min_distance})")
+                tp = 0
 
     # Build & send
     req = {

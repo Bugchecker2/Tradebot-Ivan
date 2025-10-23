@@ -352,39 +352,6 @@ if tab == "Manage Credentials":
 
             ######
 
-elif tab == "Manage Settings":
-    st.header("⚙️ Bot Settings (settings.json)")
-    settings = load_json(SETTINGS_PATH, {})
-    if not settings:
-        st.error("Failed to load settings.json or file is empty")
-    else:
-        with st.form("settings_form"):
-            lot_method      = st.selectbox(
-                "Lot Method",
-                ["percent_remaining", "percent_start"],
-                index=["percent_remaining", "percent_start"].index(settings.get("lot_method", "percent_remaining"))
-            )
-            reinvest        = st.checkbox("Reinvest Profits", value=settings.get("reinvest", True))
-            accept_PUT_CALL = st.checkbox("Accept PUT/CALL options", value=settings.get("accept_PUT_CALL", True))
-            lot_percent     = st.number_input("Lot Percent (%)", min_value=0.1, max_value=100.0,
-                                              value=float(settings.get("lot_percent", 5)))
-            max_cap_percent = st.number_input("Max Capital Percent (%)", min_value=1, max_value=100,
-                                              value=int(settings.get("max_cap_percent", 20)))
-            default_lot     = st.number_input("Default Lot Size", min_value=0.001,
-                                              value=float(settings.get("default_lot", 0.01)), format="%.4f")
-            submitted = st.form_submit_button("Save Settings")
-            if submitted:
-                new_settings = {
-                    "lot_method":      lot_method,
-                    "lot_percent":     lot_percent,
-                    "max_cap_percent": max_cap_percent,
-                    "reinvest":        reinvest,
-                    "default_lot":     default_lot,
-                    "accept_PUT_CALL": accept_PUT_CALL,
-                }
-                save_json(SETTINGS_PATH, new_settings)
-                st.success("Settings saved successfully")
-
 elif tab == "Monitor":
     st.header("📈 Monitor Trades")
     st_autorefresh(interval=1_000, key="monitor_autorefresh")
@@ -446,13 +413,29 @@ elif tab == "Monitor":
             st.session_state['last_broker'] = active
 
         positions = mt5.positions_get() or []
+
+        # New: Calculate individual margins using MT5's order_calc_margin for proration
+        calc_margins = []
+        for p in positions:
+            sym_info = mt5.symbol_info(p.symbol)
+            if sym_info is None:
+                calc_margins.append(0.0)
+                continue
+            tick = mt5.symbol_info_tick(p.symbol)
+            current_price = (tick.bid + tick.ask) / 2 if tick else p.price_open
+            calc_margin = mt5.order_calc_margin(p.type, p.symbol, p.volume, current_price)
+            calc_margins.append(calc_margin if calc_margin is not None else 0.0)
+
+        total_calc_margin = sum(calc_margins)
+        total_used_margin = info.margin
+        total_volume = sum(p.volume for p in positions) if positions else 0.0  # Keep for potential other uses
+
         rows = []
         libertex_rows = []  # New: For Libertex-style table
 
-        total_volume = sum(p.volume for p in positions) if positions else 0.0
-        total_used_margin = info.margin
+        import math  # Added for math.floor
 
-        for p in positions:
+        for i, p in enumerate(positions):
             sym_info = mt5.symbol_info(p.symbol)
             contract_size = sym_info.trade_contract_size if sym_info else 1
             lots = p.volume
@@ -475,8 +458,11 @@ elif tab == "Monitor":
             profit_pct = (p.profit / margin_used * 100) if margin_used else 0
             tick = mt5.symbol_info_tick(p.symbol)
             current_price = (tick.bid + tick.ask) / 2 if tick else p.price_open
-            margin_mt5 = mt5.order_calc_margin(p.type, p.symbol, p.volume, current_price)
-            prorated_margin = (lots / total_volume * total_used_margin) if total_volume > 0 else margin_mt5
+            # Use prorated margin based on calculated individual margins
+            calc_margin = calc_margins[i]
+            prorated_margin = (calc_margin / total_calc_margin * total_used_margin) if total_calc_margin > 0 else calc_margin
+            margin_pct = (prorated_margin / info.balance * 100) if info.balance > 0 else 0.0
+            rounded_margin_pct = math.floor(margin_pct / 10) * 10
 
             rows.append({
                 "Ticket":     p.ticket,
@@ -488,9 +474,10 @@ elif tab == "Monitor":
 #                "Units":      f"{units:.2f}",
                 "Units":       f"{units:.2f}" if units < 10 else f"{units:.0f}",
                 "Open Price": f"{convert(p.price_open, 'USD'):.2f}",
-                "Market Value": f"{convert(units * p.price_open, 'USD'):.2f}",
+                "Market Value": f"{convert(units * current_price, 'USD'):.2f}",  # Updated to use current_price for market value
 #                "Margin":       f"{convert(margin_used, margin_orig_cur):.2f}",
                 "Margin by mt5": f"{convert(prorated_margin, account_currency):.2f}",
+                "Margin %": f"{rounded_margin_pct:.0f}%",
 #                "Opened At":    opened_dt.strftime("%Y-%m-%d %H:%M:%S"),
                 "Profit":     f"{convert(p.profit, account_currency):.2f}"  
             })
@@ -521,7 +508,7 @@ elif tab == "Monitor":
             st.write("No open positions.")
         else:
             df = df[
-                ["Ticket","Path", "Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin by mt5","Profit"]
+                ["Ticket","Path", "Symbol","Leverage","Volum","Contract size","Units","Open Price","Market Value","Margin by mt5","Margin %","Profit"]
             ]
             st.table(df)
 
