@@ -351,6 +351,38 @@ if tab == "Manage Credentials":
 
 
             ######
+elif tab == "Manage Settings":
+    st.header("⚙️ Bot Settings (settings.json)")
+    settings = load_json(SETTINGS_PATH, {})
+    if not settings:
+        st.error("Failed to load settings.json or file is empty")
+    else:
+        with st.form("settings_form"):
+            lot_method      = st.selectbox(
+                "Lot Method",
+                ["percent_remaining", "percent_start"],
+                index=["percent_remaining", "percent_start"].index(settings.get("lot_method", "percent_remaining"))
+            )
+            reinvest        = st.checkbox("Reinvest Profits", value=settings.get("reinvest", True))
+            accept_PUT_CALL = st.checkbox("Accept PUT/CALL options", value=settings.get("accept_PUT_CALL", True))
+            lot_percent     = st.number_input("Lot Percent (%)", min_value=0.1, max_value=100.0,
+                                              value=float(settings.get("lot_percent", 5)))
+            max_cap_percent = st.number_input("Max Capital Percent (%)", min_value=1, max_value=100,
+                                              value=int(settings.get("max_cap_percent", 20)))
+            default_lot     = st.number_input("Default Lot Size", min_value=0.001,
+                                              value=float(settings.get("default_lot", 0.01)), format="%.4f")
+            submitted = st.form_submit_button("Save Settings")
+            if submitted:
+                new_settings = {
+                    "lot_method":      lot_method,
+                    "lot_percent":     lot_percent,
+                    "max_cap_percent": max_cap_percent,
+                    "reinvest":        reinvest,
+                    "default_lot":     default_lot,
+                    "accept_PUT_CALL": accept_PUT_CALL,
+                }
+                save_json(SETTINGS_PATH, new_settings)
+                st.success("Settings saved successfully")
 
 elif tab == "Monitor":
     st.header("📈 Monitor Trades")
@@ -361,7 +393,6 @@ elif tab == "Monitor":
     else:
         info = mt5.account_info()
         account_currency = info.currency  # Get account currency, e.g., 'EUR'
-
         # Fetch exchange rate from MT5
         tick = mt5.symbol_info_tick("EURUSD")
         if tick:
@@ -432,7 +463,6 @@ elif tab == "Monitor":
 
         rows = []
         libertex_rows = []  # New: For Libertex-style table
-
         import math  # Added for math.floor
 
         for i, p in enumerate(positions):
@@ -462,7 +492,7 @@ elif tab == "Monitor":
             calc_margin = calc_margins[i]
             prorated_margin = (calc_margin / total_calc_margin * total_used_margin) if total_calc_margin > 0 else calc_margin
             margin_pct = (prorated_margin / info.balance * 100) if info.balance > 0 else 0.0
-            rounded_margin_pct = math.floor(margin_pct / 10) * 10
+            rounded_margin_pct = round(margin_pct)
 
             rows.append({
                 "Ticket":     p.ticket,
